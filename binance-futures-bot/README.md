@@ -99,6 +99,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 | `TG_CHAT_ID` | Telegram Chat ID | - |
 | `TG_API_ID` | Telegram API ID（用于频道监听） | - |
 | `TG_API_HASH` | Telegram API Hash | - |
+| `TG_SESSION_STRING` | Telethon StringSession（推荐Docker使用） | - |
 | `DEFAULT_LEVERAGE` | 默认杠杆 | 10 |
 | `DEFAULT_STRATEGY_INTERVAL` | 默认K线周期 | 15m |
 | `DEFAULT_STOP_LOSS_PERCENT` | 默认止损百分比 | 2.0 |
@@ -109,6 +110,45 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 1. **Bot Token**: 与 [@BotFather](https://t.me/BotFather) 对话创建Bot
 2. **Chat ID**: 与 [@userinfobot](https://t.me/userinfobot) 对话获取
 3. **API ID/Hash** (可选): 在 [my.telegram.org](https://my.telegram.org) 获取
+
+### 配置Telegram频道监听（Docker环境）
+
+如果要使用频道监听功能（自动添加24H涨幅30%的币种），需要配置 Telethon session：
+
+**方法一：使用 StringSession（推荐）**
+
+```bash
+# 1. 在本地有交互式终端的环境下运行
+pip install telethon
+python generate_session.py
+
+# 2. 按提示输入：
+#    - API ID
+#    - API Hash  
+#    - 手机号（如 +8613800138000）
+#    - 验证码
+
+# 3. 将生成的 StringSession 字符串配置到环境变量
+docker run -d \
+  -e TG_API_ID=123456 \
+  -e TG_API_HASH=your_api_hash \
+  -e TG_SESSION_STRING=your_session_string \
+  ...
+```
+
+**方法二：使用 Session 文件**
+
+```bash
+# 1. 生成 session 文件
+python generate_session.py --file
+
+# 2. 挂载 session 文件到容器
+docker run -d \
+  -v $(pwd)/tgsession.session:/app/data/tgsession.session \
+  -e TG_API_ID=123456 \
+  -e TG_API_HASH=your_api_hash \
+  ...
+```
 
 ## 🎯 使用指南
 
@@ -201,6 +241,15 @@ A: 该币种近200根K线振幅<7%，已自动停止交易以避免低波动行�
 
 ### Q: 如何使用测试网？
 A: 设置环境变量 `BINANCE_TESTNET=true`，使用测试网API密钥。
+
+### Q: 频道监听报错 "EOF when reading a line"？
+A: 这是因为 Telethon 在 Docker 非交互式环境下尝试请求验证码。解决方法：
+1. 在本地先运行 `python generate_session.py` 生成 StringSession
+2. 将生成的字符串配置到 `TG_SESSION_STRING` 环境变量
+3. 或者使用 `--file` 参数生成 session 文件并挂载到容器
+
+### Q: Telethon session 过期了怎么办？
+A: 重新运行 `python generate_session.py` 生成新的 session。
 
 ## 📝 更新日志
 

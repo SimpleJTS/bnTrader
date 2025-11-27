@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     TG_API_ID: int = 0
     TG_API_HASH: str = ""
     TG_CHANNEL: str = "https://t.me/BWE_OI_Price_monitor"
+    TG_SESSION_STRING: str = ""  # Telethon StringSession，推荐用于Docker环境
     
     # 交易默认参数
     DEFAULT_LEVERAGE: int = 10

@@ -116,15 +116,45 @@ class TelegramChannelListener:
         try:
             from telethon import TelegramClient
             from telethon.sessions import StringSession
+            import os
             
-            # 使用用户提供的session文件
-            self._client = TelegramClient(
-                'tgsession',  # 对应 tgsession.session 文件
-                settings.TG_API_ID,
-                settings.TG_API_HASH
-            )
+            # 优先使用StringSession（如果配置了）
+            if settings.TG_SESSION_STRING:
+                logger.info("使用 StringSession 方式初始化 Telethon")
+                self._client = TelegramClient(
+                    StringSession(settings.TG_SESSION_STRING),
+                    settings.TG_API_ID,
+                    settings.TG_API_HASH
+                )
+            else:
+                # 使用session文件：确保使用绝对路径
+                # 优先从环境变量读取session文件路径，默认在/app/data目录
+                session_dir = os.environ.get('TG_SESSION_DIR', '/app/data')
+                session_path = os.path.join(session_dir, 'tgsession')
+                
+                # 检查session文件是否存在
+                session_file = session_path + '.session'
+                if not os.path.exists(session_file):
+                    logger.error(f"Telethon session文件不存在: {session_file}")
+                    logger.error("请先生成session文件或配置TG_SESSION_STRING环境变量")
+                    return False
+                
+                logger.info(f"使用 session 文件: {session_file}")
+                self._client = TelegramClient(
+                    session_path,
+                    settings.TG_API_ID,
+                    settings.TG_API_HASH
+                )
             
-            await self._client.start()
+            # 使用 start() 但不尝试交互式登录
+            # 如果session无效，将会失败而不是请求验证码
+            await self._client.connect()
+            
+            if not await self._client.is_user_authorized():
+                logger.error("Telethon session 未授权或已过期，请重新生成session")
+                await self._client.disconnect()
+                return False
+            
             logger.info("Telethon 客户端已启动")
             return True
             
