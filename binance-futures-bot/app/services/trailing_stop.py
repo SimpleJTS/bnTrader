@@ -50,7 +50,7 @@ class TrailingStopManager:
         symbol = position.symbol
         profit_percent = self.calculate_profit_percent(position, current_price)
         
-        logger.debug(f"{symbol} profit: {profit_percent:.2f}%, price: {current_price}")
+        logger.debug(f"[{symbol}] 当前盈亏: {profit_percent:.2f}%, 现价: {current_price}")
         
         # 更新最高/最低价格
         if position.side == "LONG":
@@ -71,7 +71,7 @@ class TrailingStopManager:
         if 2.5 <= profit_percent < 5.0 and current_level < 1:
             new_stop_price = position.entry_price
             new_level = 1
-            logger.info(f"{symbol} Level 1: Move stop to entry price {new_stop_price}")
+            logger.info(f"[{symbol}] 触发级别1: 盈利{profit_percent:.2f}%，止损提升至成本价 {new_stop_price}")
         
         # 级别2: 盈利5%~10%，锁定约3%利润
         elif 5.0 <= profit_percent < 10.0 and current_level < 2:
@@ -83,7 +83,7 @@ class TrailingStopManager:
                 lock_profit = 3.0 / position.leverage
                 new_stop_price = position.entry_price * (1 - lock_profit / 100)
             new_level = 2
-            logger.info(f"{symbol} Level 2: Lock 3% profit, stop at {new_stop_price}")
+            logger.info(f"[{symbol}] 触发级别2: 盈利{profit_percent:.2f}%，锁定3%利润，止损价 {new_stop_price}")
         
         # 级别3: 盈利≥10%，锁定5%并启动追踪
         elif profit_percent >= 10.0 and current_level < 3:
@@ -96,7 +96,7 @@ class TrailingStopManager:
                 new_stop_price = position.entry_price * (1 - lock_profit / 100)
             new_level = 3
             is_trailing = True
-            logger.info(f"{symbol} Level 3: Lock 5% profit, enable trailing, stop at {new_stop_price}")
+            logger.info(f"[{symbol}] 触发级别3: 盈利{profit_percent:.2f}%，锁定5%利润并启动追踪止损，止损价 {new_stop_price}")
         
         # 追踪止损逻辑: 价格回撤3%触发
         if is_trailing and current_level >= 3:
@@ -108,14 +108,14 @@ class TrailingStopManager:
                 # 只有新止损更高才更新
                 if trailing_stop > position.stop_loss_price:
                     new_stop_price = trailing_stop
-                    logger.info(f"{symbol} Trailing: Update stop from {position.stop_loss_price} to {new_stop_price}")
+                    logger.info(f"[{symbol}] 追踪止损更新: 最高价={highest}, 原止损={position.stop_loss_price} -> 新止损={new_stop_price}")
             else:
                 # 做空：从最低价反弹trailing_percent
                 trailing_stop = highest * (1 + trailing_percent / 100)
                 # 只有新止损更低才更新
                 if trailing_stop < position.stop_loss_price:
                     new_stop_price = trailing_stop
-                    logger.info(f"{symbol} Trailing: Update stop from {position.stop_loss_price} to {new_stop_price}")
+                    logger.info(f"[{symbol}] 追踪止损更新: 最低价={highest}, 原止损={position.stop_loss_price} -> 新止损={new_stop_price}")
         
         # 更新止损
         if new_stop_price and new_stop_price != position.stop_loss_price:
@@ -140,12 +140,12 @@ class TrailingStopManager:
                         current_price = await binance_api.get_current_price(position.symbol)
                         await self.check_trailing_stop(position, current_price)
                     except Exception as e:
-                        logger.error(f"Check trailing stop error for {position.symbol}: {e}")
+                        logger.error(f"[{position.symbol}] 检查移动止损失败: {e}")
                 
                 await asyncio.sleep(self._check_interval)
                 
             except Exception as e:
-                logger.error(f"Trailing stop loop error: {e}")
+                logger.error(f"移动止损检查循环错误: {e}")
                 await asyncio.sleep(self._check_interval)
     
     async def start(self):
@@ -155,7 +155,7 @@ class TrailingStopManager:
         
         self._running = True
         self._check_task = asyncio.create_task(self._check_loop())
-        logger.info("Trailing stop manager started")
+        logger.info("移动止损管理器已启动")
     
     async def stop(self):
         """停止"""
@@ -166,7 +166,7 @@ class TrailingStopManager:
                 await self._check_task
             except asyncio.CancelledError:
                 pass
-        logger.info("Trailing stop manager stopped")
+        logger.info("移动止损管理器已停止")
     
     def reset_tracking(self, symbol: str):
         """重置追踪数据"""

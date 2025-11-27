@@ -57,8 +57,18 @@ def setup_logging(level: str = "INFO", log_dir: str = "logs"):
 
 
 def format_price(price: float, decimals: int = 4) -> str:
-    """格式化价格"""
+    """格式化价格（固定小数位）"""
     return f"{price:.{decimals}f}"
+
+
+def format_price_full(price: float) -> str:
+    """格式化价格，保留完整精度，去除末尾无意义的0
+    
+    用于TG推送等需要显示实际价格的场景
+    """
+    # 使用足够精度格式化后去除末尾的0
+    formatted = f"{price:.12f}".rstrip('0').rstrip('.')
+    return formatted
 
 
 def format_percent(value: float, decimals: int = 2) -> str:

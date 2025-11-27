@@ -95,7 +95,7 @@ class TradingEngine:
                 logger.debug(f"{symbol}: {signal.message}")
                 return
             
-            logger.info(f"Signal detected: {symbol} - {signal.signal_type.value} - {signal.message}")
+            logger.info(f"[{symbol}] 检测到交易信号: {signal.signal_type.value}, {signal.message}")
             
             # 计算下单数量
             quantity = await binance_api.calculate_order_quantity(
@@ -104,7 +104,7 @@ class TradingEngine:
             )
             
             if quantity <= 0:
-                logger.warning(f"{symbol}: Calculated quantity is 0")
+                logger.warning(f"[{symbol}] 计算的下单数量为0，无法开仓")
                 return
             
             # 开仓
@@ -119,7 +119,7 @@ class TradingEngine:
             )
             
         except Exception as e:
-            logger.error(f"Trading engine error for {symbol}: {e}")
+            logger.error(f"[{symbol}] 交易引擎处理异常: {e}")
         finally:
             await session.close()
     
@@ -167,13 +167,13 @@ class TradingEngine:
                                 f"已自动停止交易"
                             )
                             await telegram_service.send_message(msg)
-                            logger.info(f"{pair.symbol} disabled due to low amplitude: {amplitude}%")
+                            logger.info(f"[{pair.symbol}] 因振幅过低({amplitude}%)已禁用")
                 
                 finally:
                     await session.close()
                     
             except Exception as e:
-                logger.error(f"Amplitude check error: {e}")
+                logger.error(f"振幅检查异常: {e}")
     
     async def start(self):
         """启动交易引擎"""
@@ -185,7 +185,7 @@ class TradingEngine:
         # 启动振幅检查任务
         self._amplitude_check_task = asyncio.create_task(self.check_amplitude())
         
-        logger.info("Trading engine started")
+        logger.info("交易引擎已启动")
     
     async def stop(self):
         """停止交易引擎"""
@@ -200,7 +200,7 @@ class TradingEngine:
             except asyncio.CancelledError:
                 pass
         
-        logger.info("Trading engine stopped")
+        logger.info("交易引擎已停止")
 
 
 # 创建交易引擎实例
@@ -230,7 +230,7 @@ async def load_config_from_db():
             elif config.key == "TG_API_HASH":
                 settings.TG_API_HASH = config.value
         
-        logger.info("Config loaded from database")
+        logger.info("已从数据库加载配置")
     finally:
         await session.close()
 
@@ -258,9 +258,9 @@ async def subscribe_active_pairs():
                 )
                 trading_engine._kline_cache[pair.symbol] = klines
             except Exception as e:
-                logger.error(f"Failed to preload klines for {pair.symbol}: {e}")
+                logger.error(f"[{pair.symbol}] 预加载K线数据失败: {e}")
         
-        logger.info(f"Subscribed to {len(pairs)} trading pairs")
+        logger.info(f"已订阅 {len(pairs)} 个交易对")
     finally:
         await session.close()
 
@@ -268,7 +268,7 @@ async def subscribe_active_pairs():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    logger.info("Starting Binance Futures Bot...")
+    logger.info("正在启动 Binance Futures Bot...")
     
     # 初始化数据库
     await init_db()
@@ -301,12 +301,12 @@ async def lifespan(app: FastAPI):
     # 发送启动通知
     await telegram_service.send_message("🚀 **Binance Futures Bot 已启动**")
     
-    logger.info("Bot started successfully!")
+    logger.info("Bot 启动成功!")
     
     yield
     
     # 关闭服务
-    logger.info("Shutting down...")
+    logger.info("正在关闭服务...")
     
     await trailing_stop_manager.stop()
     await trading_engine.stop()
@@ -316,7 +316,7 @@ async def lifespan(app: FastAPI):
     
     await telegram_service.send_message("🛑 **Binance Futures Bot 已停止**")
     
-    logger.info("Bot stopped.")
+    logger.info("Bot 已停止")
 
 
 # 创建FastAPI应用

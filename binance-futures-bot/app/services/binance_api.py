@@ -97,10 +97,10 @@ class BinanceAPI:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
+            logger.error(f"HTTP请求错误: 状态码={e.response.status_code}, 响应={e.response.text}")
             raise
         except Exception as e:
-            logger.error(f"Request error: {e}")
+            logger.error(f"请求异常: {e}")
             raise
     
     async def get_exchange_info(self) -> dict:
@@ -133,7 +133,7 @@ class BinanceAPI:
         """
         info = await self.get_symbol_info(symbol)
         if not info:
-            logger.warning(f"Symbol {symbol} not found, using default precision")
+            logger.warning(f"[{symbol}] 未找到交易对信息，使用默认精度")
             return {
                 'price_precision': 8,
                 'quantity_precision': 8,
@@ -163,7 +163,7 @@ class BinanceAPI:
             elif filter_type == "MIN_NOTIONAL":
                 result['min_notional'] = f.get("notional", result['min_notional'])
         
-        logger.debug(f"Symbol {symbol} precision: {result}")
+        logger.debug(f"[{symbol}] 精度信息: {result}")
         return result
     
     def round_step(self, value: float, step: str) -> Decimal:
@@ -304,7 +304,7 @@ class BinanceAPI:
         formatted_qty = self.format_quantity(quantity, precision_info)
         
         if Decimal(formatted_qty) <= 0:
-            raise ValueError(f"Invalid quantity: {quantity} -> {formatted_qty}")
+            raise ValueError(f"无效的下单数量: {quantity} -> {formatted_qty}")
         
         params = {
             "symbol": symbol,
@@ -315,7 +315,9 @@ class BinanceAPI:
         if reduce_only:
             params["reduceOnly"] = "true"
         
-        logger.info(f"Placing market order: {params}")
+        side_desc = "买入" if side == "BUY" else "卖出"
+        reduce_desc = "(仅减仓)" if reduce_only else ""
+        logger.info(f"[{symbol}] 提交市价单: {side_desc}{reduce_desc}, 数量={formatted_qty}")
         return await self._request("POST", "/fapi/v1/order", params, signed=True)
     
     async def place_stop_loss_order(self, symbol: str, side: str, quantity: float,
@@ -335,7 +337,7 @@ class BinanceAPI:
         # 格式化止损价格
         formatted_price = self.format_price(stop_price, precision_info)
         if Decimal(formatted_price) <= 0:
-            raise ValueError(f"Invalid stop price: {stop_price} -> {formatted_price} (tick_size={precision_info['tick_size']})")
+            raise ValueError(f"无效的止损价格: {stop_price} -> {formatted_price} (tick_size={precision_info['tick_size']})")
         
         params = {
             "symbol": symbol,
@@ -353,14 +355,15 @@ class BinanceAPI:
             min_qty = Decimal(precision_info['min_qty'])
             
             if Decimal(formatted_qty) <= 0:
-                raise ValueError(f"Invalid quantity: {quantity} -> {formatted_qty} (step_size={precision_info['step_size']})")
+                raise ValueError(f"无效的下单数量: {quantity} -> {formatted_qty} (step_size={precision_info['step_size']})")
             if Decimal(formatted_qty) < min_qty:
-                raise ValueError(f"Quantity {formatted_qty} is less than minimum {min_qty}")
+                raise ValueError(f"下单数量 {formatted_qty} 小于最小值 {min_qty}")
             
             params["quantity"] = formatted_qty
             params["reduceOnly"] = "true"
         
-        logger.info(f"Placing stop loss order: {params}")
+        side_desc = "买入止损" if side == "BUY" else "卖出止损"
+        logger.info(f"[{symbol}] 提交止损单: {side_desc}, 触发价={formatted_price}, 数量={params.get('quantity', '全仓')}")
         return await self._request("POST", "/fapi/v1/order", params, signed=True)
     
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
@@ -407,7 +410,7 @@ class BinanceAPI:
         current_price = await self.get_current_price(symbol)
         
         if current_price <= 0:
-            logger.error(f"Invalid current price for {symbol}: {current_price}")
+            logger.error(f"[{symbol}] 无效的当前价格: {current_price}")
             return 0
         
         # 计算数量 (资金 * 杠杆 / 价格)
@@ -419,13 +422,13 @@ class BinanceAPI:
         
         # 确保不小于最小数量
         if quantity_dec < min_qty:
-            logger.warning(f"Calculated quantity {formatted_qty} is less than min_qty {min_qty}")
+            logger.warning(f"[{symbol}] 计算数量 {formatted_qty} 小于最小下单量 {min_qty}")
             return 0
         
         # 检查最小名义价值 (quantity * price >= min_notional)
         notional = quantity_dec * Decimal(str(current_price))
         if notional < min_notional:
-            logger.warning(f"Order notional {notional} is less than min_notional {min_notional}")
+            logger.warning(f"[{symbol}] 订单名义价值 {notional} 小于最小值 {min_notional}")
             return 0
         
         return float(quantity_dec)

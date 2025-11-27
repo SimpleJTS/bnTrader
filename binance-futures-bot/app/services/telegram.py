@@ -23,17 +23,17 @@ class TelegramService:
     async def initialize(self):
         """初始化Telegram Bot"""
         if not settings.TG_BOT_TOKEN or not settings.TG_CHAT_ID:
-            logger.warning("Telegram bot token or chat_id not configured")
+            logger.warning("Telegram Bot Token 或 Chat ID 未配置")
             return False
         
         try:
             from telegram import Bot
             self._bot = Bot(token=settings.TG_BOT_TOKEN)
             self._initialized = True
-            logger.info("Telegram bot initialized")
+            logger.info("Telegram Bot 已初始化")
             return True
         except Exception as e:
-            logger.error(f"Failed to initialize Telegram bot: {e}")
+            logger.error(f"Telegram Bot 初始化失败: {e}")
             return False
     
     async def send_message(self, message: str, parse_mode: str = "Markdown"):
@@ -42,7 +42,7 @@ class TelegramService:
             await self.initialize()
         
         if not self._bot:
-            logger.warning("Telegram bot not initialized, skipping message")
+            logger.warning("Telegram Bot 未初始化，跳过消息发送")
             return False
         
         try:
@@ -55,7 +55,7 @@ class TelegramService:
             )
             return True
         except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
+            logger.error(f"发送 Telegram 消息失败: {e}")
             # 尝试不使用parse_mode
             try:
                 await self._bot.send_message(
@@ -64,7 +64,7 @@ class TelegramService:
                 )
                 return True
             except Exception as e2:
-                logger.error(f"Failed to send plain message: {e2}")
+                logger.error(f"发送纯文本消息也失败: {e2}")
                 return False
     
     def _escape_markdown(self, text: str) -> str:
@@ -105,12 +105,12 @@ class TelegramChannelListener:
                 else:
                     callback(symbol, change_percent)
             except Exception as e:
-                logger.error(f"Channel listener callback error: {e}")
+                logger.error(f"频道监听器回调异常: {e}")
     
     async def initialize(self) -> bool:
         """初始化Telethon客户端"""
         if not settings.TG_API_ID or not settings.TG_API_HASH:
-            logger.warning("Telegram API credentials not configured for channel listening")
+            logger.warning("Telegram API 凭据未配置，无法启用频道监听")
             return False
         
         try:
@@ -125,11 +125,11 @@ class TelegramChannelListener:
             )
             
             await self._client.start()
-            logger.info("Telethon client started")
+            logger.info("Telethon 客户端已启动")
             return True
             
         except Exception as e:
-            logger.error(f"Failed to initialize Telethon: {e}")
+            logger.error(f"Telethon 初始化失败: {e}")
             return False
     
     def parse_message(self, text: str) -> List[tuple]:
@@ -148,7 +148,7 @@ class TelegramChannelListener:
                 # 只关注涨幅超过30%的
                 if change_percent >= self.MIN_CHANGE_PERCENT:
                     results.append((symbol, change_percent))
-                    logger.info(f"Found symbol {symbol} with {change_percent}% change")
+                    logger.info(f"[{symbol}] 发现符合条件的交易对，涨幅 {change_percent}%")
             except ValueError:
                 continue
         
@@ -165,9 +165,9 @@ class TelegramChannelListener:
         
         try:
             entity = await self._client.get_entity(channel)
-            logger.info(f"Listening to channel: {channel}")
+            logger.info(f"正在监听频道: {channel}")
         except Exception as e:
-            logger.error(f"Failed to get channel entity: {e}")
+            logger.error(f"获取频道实体失败: {e}")
             return
         
         @self._client.on(events.NewMessage(chats=entity))
@@ -180,7 +180,7 @@ class TelegramChannelListener:
                     await self._notify_callbacks(symbol, change_percent)
                     
             except Exception as e:
-                logger.error(f"Message handler error: {e}")
+                logger.error(f"消息处理异常: {e}")
         
         # 保持运行
         while self._running:
@@ -196,7 +196,7 @@ class TelegramChannelListener:
         
         self._running = True
         self._listen_task = asyncio.create_task(self._listen_loop())
-        logger.info("Channel listener started")
+        logger.info("频道监听器已启动")
     
     async def stop(self):
         """停止监听"""
@@ -212,7 +212,7 @@ class TelegramChannelListener:
         if self._client:
             await self._client.disconnect()
         
-        logger.info("Channel listener stopped")
+        logger.info("频道监听器已停止")
 
 
 # 全局实例
@@ -235,7 +235,7 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         existing = result.scalar_one_or_none()
         
         if existing:
-            logger.info(f"Symbol {symbol} already exists in config")
+            logger.info(f"[{symbol}] 交易对已存在，跳过添加")
             return
         
         # 添加新交易对
@@ -249,7 +249,7 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         session.add(new_pair)
         await session.commit()
         
-        logger.info(f"Added new trading pair: {symbol}")
+        logger.info(f"[{symbol}] 已添加新交易对")
         
         # 通知配置变更
         await config_manager.notify_observers("trading_pair_added", {
@@ -267,7 +267,7 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         await telegram_service.send_message(msg)
         
     except Exception as e:
-        logger.error(f"Failed to add new symbol {symbol}: {e}")
+        logger.error(f"[{symbol}] 添加新交易对失败: {e}")
         await session.rollback()
     finally:
         await session.close()

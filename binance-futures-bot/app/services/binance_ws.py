@@ -84,7 +84,7 @@ class BinanceWebSocket:
                 else:
                     callback(kline)
             except Exception as e:
-                logger.error(f"Callback error: {e}")
+                logger.error(f"回调处理异常: {e}")
     
     def _build_stream_name(self, symbol: str, interval: str) -> str:
         """构建stream名称"""
@@ -95,7 +95,7 @@ class BinanceWebSocket:
         async with self._lock:
             stream_name = self._build_stream_name(symbol, interval)
             if symbol in self._subscriptions:
-                logger.info(f"Already subscribed to {symbol}")
+                logger.info(f"[{symbol}] 已订阅，跳过重复订阅")
                 return
             
             self._subscriptions[symbol] = interval
@@ -108,7 +108,7 @@ class BinanceWebSocket:
                     "id": int(time.time() * 1000)
                 }
                 await self._ws.send(json.dumps(subscribe_msg))
-                logger.info(f"Subscribed to {symbol} {interval}")
+                logger.info(f"[{symbol}] 已订阅 {interval} K线")
     
     async def unsubscribe(self, symbol: str):
         """取消订阅"""
@@ -126,7 +126,7 @@ class BinanceWebSocket:
                     "id": int(time.time() * 1000)
                 }
                 await self._ws.send(json.dumps(unsubscribe_msg))
-                logger.info(f"Unsubscribed from {symbol}")
+                logger.info(f"[{symbol}] 已取消订阅")
     
     async def _connect(self):
         """建立WebSocket连接"""
@@ -149,16 +149,16 @@ class BinanceWebSocket:
             )
             self._start_time = datetime.utcnow()
             self._reconnect_count = 0
-            logger.info(f"WebSocket connected: {url}")
+            logger.info(f"WebSocket 已连接: {url}")
             return True
         except Exception as e:
-            logger.error(f"WebSocket connection failed: {e}")
+            logger.error(f"WebSocket 连接失败: {e}")
             return False
     
     async def _reconnect(self):
         """重连"""
         self._reconnect_count += 1
-        logger.warning(f"Reconnecting... (attempt {self._reconnect_count})")
+        logger.warning(f"正在重连 WebSocket... (第{self._reconnect_count}次尝试)")
         
         # 关闭旧连接
         if self._ws:
@@ -212,10 +212,10 @@ class BinanceWebSocket:
             except asyncio.TimeoutError:
                 continue
             except ConnectionClosed:
-                logger.warning("WebSocket connection closed")
+                logger.warning("WebSocket 连接已关闭")
                 await self._reconnect()
             except Exception as e:
-                logger.error(f"Message handler error: {e}")
+                logger.error(f"消息处理异常: {e}")
                 await asyncio.sleep(1)
     
     async def _health_check(self):
@@ -250,7 +250,7 @@ class BinanceWebSocket:
                         await self._full_restart()
                 
             except Exception as e:
-                logger.error(f"Health check error: {e}")
+                logger.error(f"健康检查异常: {e}")
     
     async def _full_restart(self):
         """全量重启WebSocket"""
@@ -297,7 +297,7 @@ class BinanceWebSocket:
         # 启动健康检查任务
         self._health_check_task = asyncio.create_task(self._health_check())
         
-        logger.info("WebSocket service started")
+        logger.info("WebSocket 服务已启动")
     
     async def stop(self):
         """停止WebSocket服务"""
@@ -320,7 +320,7 @@ class BinanceWebSocket:
         if self._ws:
             await self._ws.close()
         
-        logger.info("WebSocket service stopped")
+        logger.info("WebSocket 服务已停止")
     
     def get_status(self) -> dict:
         """获取WebSocket状态"""
