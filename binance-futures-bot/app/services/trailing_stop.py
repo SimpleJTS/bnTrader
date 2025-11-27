@@ -3,26 +3,36 @@
 实现分级止损和追踪止损
 """
 import asyncio
+import json
 import logging
 from typing import Dict, Optional
 from datetime import datetime
 
-from app.config import settings
+from sqlalchemy import select
+
+from app.config import settings, config_manager
 from app.database import DatabaseManager
 from app.services.binance_api import binance_api
 from app.services.position_manager import position_manager
-from app.models import Position, StopLossLog
+from app.models import Position, StopLossLog, SystemConfig
 
 logger = logging.getLogger(__name__)
+
+
+# 默认止损配置
+DEFAULT_TRAILING_CONFIG = {
+    "level_1": {"profit_min": 2.5, "profit_max": 5.0, "lock_profit": 0, "trailing_enabled": False, "trailing_percent": 3.0},
+    "level_2": {"profit_min": 5.0, "profit_max": 10.0, "lock_profit": 3.0, "trailing_enabled": False, "trailing_percent": 3.0},
+    "level_3": {"profit_min": 10.0, "profit_max": None, "lock_profit": 5.0, "trailing_enabled": True, "trailing_percent": 3.0}
+}
 
 
 class TrailingStopManager:
     """移动止损管理器
     
     止损规则（基于价格变动百分比，不含杠杆）:
-    - 价格变动 2.5%~5%: 止损提到成本价
-    - 价格变动 5%~10%: 锁定3%价格利润
-    - 价格变动 ≥10%: 锁定5%价格利润并启动追踪（价格回撤3%触发）
+    - 各级别参数可通过Web界面配置
+    - 默认: 2.5%~5%保本，5%~10%锁3%，≥10%锁5%并追踪回撤3%
     """
     
     def __init__(self):
@@ -30,6 +40,42 @@ class TrailingStopManager:
         self._running = False
         self._check_task: Optional[asyncio.Task] = None
         self._check_interval = 5  # 检查间隔(秒)
+        self._config: Dict = DEFAULT_TRAILING_CONFIG.copy()  # 当前配置
+    
+    async def load_config(self):
+        """从数据库加载止损配置"""
+        session = await DatabaseManager.get_session()
+        try:
+            result = await session.execute(
+                select(SystemConfig).where(SystemConfig.key == "TRAILING_STOP_CONFIG")
+            )
+            config = result.scalar_one_or_none()
+            
+            if config and config.value:
+                try:
+                    self._config = json.loads(config.value)
+                    logger.info(f"已加载移动止损配置: {self._config}")
+                except json.JSONDecodeError:
+                    logger.warning("移动止损配置解析失败，使用默认配置")
+                    self._config = DEFAULT_TRAILING_CONFIG.copy()
+            else:
+                logger.info("未找到移动止损配置，使用默认配置")
+                self._config = DEFAULT_TRAILING_CONFIG.copy()
+        except Exception as e:
+            logger.error(f"加载移动止损配置失败: {e}")
+            self._config = DEFAULT_TRAILING_CONFIG.copy()
+        finally:
+            await session.close()
+    
+    async def on_config_change(self, change_type: str, data: dict):
+        """处理配置变更"""
+        if change_type == "trailing_stop_config_updated":
+            self._config = data
+            logger.info(f"移动止损配置已更新: {self._config}")
+    
+    def get_config(self) -> Dict:
+        """获取当前配置"""
+        return self._config
     
     def calculate_profit_percent(self, position: Position, current_price: float) -> float:
         """计算盈利百分比(基于价格变动，不含杠杆)"""
@@ -70,47 +116,71 @@ class TrailingStopManager:
         adjust_detail = None
         locked_profit = None
         
-        # 级别1: 价格变动2.5%~5%，止损提到成本价
-        if 2.5 <= profit_percent < 5.0 and current_level < 1:
-            new_stop_price = position.entry_price
+        # 从配置中读取各级别参数
+        level_1_cfg = self._config.get("level_1", DEFAULT_TRAILING_CONFIG["level_1"])
+        level_2_cfg = self._config.get("level_2", DEFAULT_TRAILING_CONFIG["level_2"])
+        level_3_cfg = self._config.get("level_3", DEFAULT_TRAILING_CONFIG["level_3"])
+        
+        l1_min = level_1_cfg.get("profit_min", 2.5)
+        l1_max = level_1_cfg.get("profit_max", 5.0)
+        l1_lock = level_1_cfg.get("lock_profit", 0)
+        
+        l2_min = level_2_cfg.get("profit_min", 5.0)
+        l2_max = level_2_cfg.get("profit_max", 10.0)
+        l2_lock = level_2_cfg.get("lock_profit", 3.0)
+        
+        l3_min = level_3_cfg.get("profit_min", 10.0)
+        l3_lock = level_3_cfg.get("lock_profit", 5.0)
+        l3_trailing = level_3_cfg.get("trailing_enabled", True)
+        l3_trailing_pct = level_3_cfg.get("trailing_percent", 3.0)
+        
+        # 级别1: 保本止损
+        if l1_min <= profit_percent < (l1_max or float('inf')) and current_level < 1:
+            if l1_lock == 0:
+                new_stop_price = position.entry_price
+                locked_profit = 0.0
+                adjust_reason = "盈利保护 - 止损提至成本价"
+                adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值{l1_min}%），止损从{position.stop_loss_price:.6f}提升至成本价{position.entry_price:.6f}，确保不亏损"
+            else:
+                if position.side == "LONG":
+                    new_stop_price = position.entry_price * (1 + l1_lock / 100)
+                else:
+                    new_stop_price = position.entry_price * (1 - l1_lock / 100)
+                locked_profit = l1_lock
+                adjust_reason = f"盈利保护 - 锁定{l1_lock}%利润"
+                adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值{l1_min}%），锁定{l1_lock}%利润，止损价设为{new_stop_price:.6f}"
             new_level = 1
-            locked_profit = 0.0
-            adjust_reason = "盈利保护 - 止损提至成本价"
-            adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值2.5%），止损从{position.stop_loss_price:.6f}提升至成本价{position.entry_price:.6f}，确保不亏损"
-            logger.info(f"[{symbol}] 触发级别1: 价格变动{profit_percent:.2f}%，止损提升至成本价 {new_stop_price}")
+            logger.info(f"[{symbol}] 触发级别1: 价格变动{profit_percent:.2f}%，止损设为 {new_stop_price}")
         
-        # 级别2: 价格变动5%~10%，锁定3%价格利润
-        elif 5.0 <= profit_percent < 10.0 and current_level < 2:
-            # 锁定3%价格利润
-            lock_profit = 3.0
+        # 级别2: 锁定利润
+        elif l2_min <= profit_percent < (l2_max or float('inf')) and current_level < 2:
             if position.side == "LONG":
-                new_stop_price = position.entry_price * (1 + lock_profit / 100)
+                new_stop_price = position.entry_price * (1 + l2_lock / 100)
             else:
-                new_stop_price = position.entry_price * (1 - lock_profit / 100)
+                new_stop_price = position.entry_price * (1 - l2_lock / 100)
             new_level = 2
-            locked_profit = 3.0
-            adjust_reason = "锁定利润 - 保护3%价格收益"
-            adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值5%），锁定3%价格利润，止损价设为{new_stop_price:.6f}"
-            logger.info(f"[{symbol}] 触发级别2: 价格变动{profit_percent:.2f}%，锁定3%利润，止损价 {new_stop_price}")
+            locked_profit = l2_lock
+            adjust_reason = f"锁定利润 - 保护{l2_lock}%价格收益"
+            adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值{l2_min}%），锁定{l2_lock}%价格利润，止损价设为{new_stop_price:.6f}"
+            logger.info(f"[{symbol}] 触发级别2: 价格变动{profit_percent:.2f}%，锁定{l2_lock}%利润，止损价 {new_stop_price}")
         
-        # 级别3: 价格变动≥10%，锁定5%并启动追踪
-        elif profit_percent >= 10.0 and current_level < 3:
-            # 锁定5%价格利润
-            lock_profit = 5.0
+        # 级别3: 追踪止损
+        elif profit_percent >= l3_min and current_level < 3:
             if position.side == "LONG":
-                new_stop_price = position.entry_price * (1 + lock_profit / 100)
+                new_stop_price = position.entry_price * (1 + l3_lock / 100)
             else:
-                new_stop_price = position.entry_price * (1 - lock_profit / 100)
+                new_stop_price = position.entry_price * (1 - l3_lock / 100)
             new_level = 3
-            is_trailing = True
-            locked_profit = 5.0
-            adjust_reason = "启动追踪止损 - 锁定5%价格收益"
-            adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值10%），锁定5%价格利润并启动追踪止损模式，止损价设为{new_stop_price:.6f}，后续将跟随价格变动（回撤3%触发）"
-            logger.info(f"[{symbol}] 触发级别3: 价格变动{profit_percent:.2f}%，锁定5%利润并启动追踪止损，止损价 {new_stop_price}")
+            is_trailing = l3_trailing
+            locked_profit = l3_lock
+            trailing_desc = f"并启动追踪止损模式（回撤{l3_trailing_pct}%触发）" if l3_trailing else ""
+            adjust_reason = f"{'启动追踪止损' if l3_trailing else '锁定利润'} - 锁定{l3_lock}%价格收益"
+            adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值{l3_min}%），锁定{l3_lock}%价格利润{trailing_desc}，止损价设为{new_stop_price:.6f}"
+            logger.info(f"[{symbol}] 触发级别3: 价格变动{profit_percent:.2f}%，锁定{l3_lock}%利润{'并启动追踪止损' if l3_trailing else ''}，止损价 {new_stop_price}")
         
-        # 追踪止损逻辑: 价格回撤3%触发
+        # 追踪止损逻辑
         if is_trailing and current_level >= 3:
-            trailing_percent = 3.0  # 价格回撤3%
+            trailing_percent = l3_trailing_pct
             
             if position.side == "LONG":
                 # 做多：从最高价回撤trailing_percent
@@ -254,6 +324,12 @@ class TrailingStopManager:
         """启动移动止损检查"""
         if self._running:
             return
+        
+        # 加载配置
+        await self.load_config()
+        
+        # 注册配置变更监听
+        config_manager.add_observer(self.on_config_change)
         
         self._running = True
         self._check_task = asyncio.create_task(self._check_loop())

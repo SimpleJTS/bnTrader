@@ -13,7 +13,8 @@ from app.api.schemas import (
     TradingPairCreate, TradingPairUpdate, TradingPairResponse,
     BinanceConfigUpdate, TelegramConfigUpdate, SystemConfigResponse,
     PositionResponse, WebSocketStatus, TradeLogResponse, StopLossLogResponse,
-    MessageResponse, ErrorResponse
+    MessageResponse, ErrorResponse,
+    TrailingStopConfig, TrailingStopConfigUpdate, TrailingStopLevel
 )
 from app.config import settings, config_manager
 from app.services.binance_api import binance_api
@@ -409,3 +410,101 @@ async def test_telegram():
             raise HTTPException(status_code=500, detail="发送失败，请检查Telegram配置")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ========== Trailing Stop Config ==========
+
+def get_default_trailing_config() -> dict:
+    """获取默认移动止损配置"""
+    return {
+        "level_1": {"profit_min": 2.5, "profit_max": 5.0, "lock_profit": 0, "trailing_enabled": False, "trailing_percent": 3.0},
+        "level_2": {"profit_min": 5.0, "profit_max": 10.0, "lock_profit": 3.0, "trailing_enabled": False, "trailing_percent": 3.0},
+        "level_3": {"profit_min": 10.0, "profit_max": None, "lock_profit": 5.0, "trailing_enabled": True, "trailing_percent": 3.0}
+    }
+
+
+@router.get("/config/trailing-stop", response_model=TrailingStopConfig)
+async def get_trailing_stop_config():
+    """获取移动止损配置"""
+    import json
+    session = await DatabaseManager.get_session()
+    try:
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == "TRAILING_STOP_CONFIG")
+        )
+        config = result.scalar_one_or_none()
+        
+        if config and config.value:
+            try:
+                config_data = json.loads(config.value)
+                return TrailingStopConfig(
+                    level_1=TrailingStopLevel(**config_data.get("level_1", get_default_trailing_config()["level_1"])),
+                    level_2=TrailingStopLevel(**config_data.get("level_2", get_default_trailing_config()["level_2"])),
+                    level_3=TrailingStopLevel(**config_data.get("level_3", get_default_trailing_config()["level_3"]))
+                )
+            except (json.JSONDecodeError, TypeError):
+                pass
+        
+        # 返回默认配置
+        default = get_default_trailing_config()
+        return TrailingStopConfig(
+            level_1=TrailingStopLevel(**default["level_1"]),
+            level_2=TrailingStopLevel(**default["level_2"]),
+            level_3=TrailingStopLevel(**default["level_3"])
+        )
+    finally:
+        await session.close()
+
+
+@router.post("/config/trailing-stop", response_model=MessageResponse)
+async def update_trailing_stop_config(data: TrailingStopConfigUpdate):
+    """更新移动止损配置"""
+    import json
+    session = await DatabaseManager.get_session()
+    try:
+        # 先获取现有配置
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == "TRAILING_STOP_CONFIG")
+        )
+        config = result.scalar_one_or_none()
+        
+        # 合并配置
+        existing_config = get_default_trailing_config()
+        if config and config.value:
+            try:
+                existing_config = json.loads(config.value)
+            except json.JSONDecodeError:
+                pass
+        
+        # 更新提供的级别
+        if data.level_1:
+            existing_config["level_1"] = data.level_1.model_dump()
+        if data.level_2:
+            existing_config["level_2"] = data.level_2.model_dump()
+        if data.level_3:
+            existing_config["level_3"] = data.level_3.model_dump()
+        
+        # 保存到数据库
+        config_value = json.dumps(existing_config)
+        if config:
+            config.value = config_value
+            config.description = "移动止损级别配置"
+        else:
+            config = SystemConfig(
+                key="TRAILING_STOP_CONFIG",
+                value=config_value,
+                description="移动止损级别配置"
+            )
+            session.add(config)
+        
+        await session.commit()
+        
+        # 通知配置变更
+        await config_manager.notify_observers("trailing_stop_config_updated", existing_config)
+        
+        return MessageResponse(success=True, message="移动止损配置已更新")
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await session.close()

@@ -154,3 +154,46 @@ class ErrorResponse(BaseModel):
     """错误响应"""
     error: str
     detail: Optional[str] = None
+
+
+# ========== Trailing Stop Config ==========
+
+class TrailingStopLevel(BaseModel):
+    """单个止损级别配置"""
+    profit_min: float = Field(..., ge=0, description="触发该级别的最小盈利百分比")
+    profit_max: Optional[float] = Field(None, ge=0, description="该级别的最大盈利百分比（下一级别开始）")
+    lock_profit: float = Field(default=0, ge=0, description="锁定的利润百分比（0表示止损提到成本价）")
+    trailing_enabled: bool = Field(default=False, description="是否启用追踪止损")
+    trailing_percent: float = Field(default=3.0, ge=0.1, le=50, description="追踪止损回撤百分比")
+
+
+class TrailingStopConfig(BaseModel):
+    """移动止损配置"""
+    level_1: TrailingStopLevel = Field(
+        default_factory=lambda: TrailingStopLevel(
+            profit_min=2.5, profit_max=5.0, lock_profit=0, 
+            trailing_enabled=False, trailing_percent=3.0
+        ),
+        description="级别1：保本止损"
+    )
+    level_2: TrailingStopLevel = Field(
+        default_factory=lambda: TrailingStopLevel(
+            profit_min=5.0, profit_max=10.0, lock_profit=3.0,
+            trailing_enabled=False, trailing_percent=3.0
+        ),
+        description="级别2：锁定利润"
+    )
+    level_3: TrailingStopLevel = Field(
+        default_factory=lambda: TrailingStopLevel(
+            profit_min=10.0, profit_max=None, lock_profit=5.0,
+            trailing_enabled=True, trailing_percent=3.0
+        ),
+        description="级别3：追踪止损"
+    )
+
+
+class TrailingStopConfigUpdate(BaseModel):
+    """更新移动止损配置"""
+    level_1: Optional[TrailingStopLevel] = None
+    level_2: Optional[TrailingStopLevel] = None
+    level_3: Optional[TrailingStopLevel] = None

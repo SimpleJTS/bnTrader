@@ -554,19 +554,19 @@
             
             <!-- 止损规则说明 -->
             <div class="card" style="margin-top: 20px;">
-                <h2 class="card-title" style="margin-bottom: 16px;">📋 止损调整规则</h2>
+                <h2 class="card-title" style="margin-bottom: 16px;">📋 止损调整规则 <span style="font-size: 0.75rem; color: var(--text-secondary); font-weight: normal;">(可在配置页面修改)</span></h2>
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
                     <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 3px solid var(--accent-yellow);">
                         <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-yellow);">级别 1 - 保本止损</div>
-                        <div style="color: var(--text-secondary); font-size: 0.875rem;">盈利达到 2.5%~5% 时，止损提升至成本价，确保不亏损</div>
+                        <div style="color: var(--text-secondary); font-size: 0.875rem;" id="sl-rule-level1">盈利达到 2.5%~5% 时，止损提升至成本价，确保不亏损</div>
                     </div>
                     <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 3px solid var(--accent-blue);">
                         <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-blue);">级别 2 - 锁定利润</div>
-                        <div style="color: var(--text-secondary); font-size: 0.875rem;">盈利达到 5%~10% 时，锁定 3% 利润</div>
+                        <div style="color: var(--text-secondary); font-size: 0.875rem;" id="sl-rule-level2">盈利达到 5%~10% 时，锁定 3% 利润</div>
                     </div>
                     <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 3px solid var(--accent-green);">
                         <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-green);">级别 3 - 追踪止损</div>
-                        <div style="color: var(--text-secondary); font-size: 0.875rem;">盈利达到 10% 以上，锁定 5% 并启动追踪止损（回撤3%触发）</div>
+                        <div style="color: var(--text-secondary); font-size: 0.875rem;" id="sl-rule-level3">盈利达到 10% 以上，锁定 5% 并启动追踪止损（回撤3%触发）</div>
                     </div>
                 </div>
             </div>
@@ -667,6 +667,89 @@
                     <button class="btn btn-secondary" onclick="restartWebSocket()">重启 WebSocket</button>
                     <span id="ws-info" style="color: var(--text-secondary); font-size: 0.875rem;"></span>
                 </div>
+            </div>
+
+            <!-- 移动止损配置 -->
+            <div class="card">
+                <h2 class="card-title" style="margin-bottom: 24px;">📊 移动止盈止损配置</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.875rem;">
+                    配置各级别的触发条件和锁定利润比例。盈利百分比基于价格变动计算（不含杠杆）。
+                </p>
+                <form id="trailing-stop-form">
+                    <!-- 级别1 -->
+                    <div style="background: var(--bg-tertiary); padding: 20px; border-radius: 12px; margin-bottom: 16px; border-left: 4px solid var(--accent-yellow);">
+                        <h3 style="color: var(--accent-yellow); margin-bottom: 16px; font-size: 1rem;">
+                            级别 1 - 保本止损
+                        </h3>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">触发盈利 (最小%)</label>
+                                <input type="number" class="form-input" id="ts-l1-profit-min" step="0.1" min="0" value="2.5">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">触发盈利 (最大%)</label>
+                                <input type="number" class="form-input" id="ts-l1-profit-max" step="0.1" min="0" value="5.0">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">锁定利润 (%) <span style="color:var(--text-secondary);font-size:0.75rem">0=成本价</span></label>
+                                <input type="number" class="form-input" id="ts-l1-lock-profit" step="0.1" min="0" value="0">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 级别2 -->
+                    <div style="background: var(--bg-tertiary); padding: 20px; border-radius: 12px; margin-bottom: 16px; border-left: 4px solid var(--accent-blue);">
+                        <h3 style="color: var(--accent-blue); margin-bottom: 16px; font-size: 1rem;">
+                            级别 2 - 锁定利润
+                        </h3>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">触发盈利 (最小%)</label>
+                                <input type="number" class="form-input" id="ts-l2-profit-min" step="0.1" min="0" value="5.0">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">触发盈利 (最大%)</label>
+                                <input type="number" class="form-input" id="ts-l2-profit-max" step="0.1" min="0" value="10.0">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">锁定利润 (%)</label>
+                                <input type="number" class="form-input" id="ts-l2-lock-profit" step="0.1" min="0" value="3.0">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 级别3 -->
+                    <div style="background: var(--bg-tertiary); padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 4px solid var(--accent-green);">
+                        <h3 style="color: var(--accent-green); margin-bottom: 16px; font-size: 1rem;">
+                            级别 3 - 追踪止损
+                        </h3>
+                        <div class="form-row">
+                            <div class="form-group">
+                                <label class="form-label">触发盈利 (最小%)</label>
+                                <input type="number" class="form-input" id="ts-l3-profit-min" step="0.1" min="0" value="10.0">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">锁定利润 (%)</label>
+                                <input type="number" class="form-input" id="ts-l3-lock-profit" step="0.1" min="0" value="5.0">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">追踪回撤 (%)</label>
+                                <input type="number" class="form-input" id="ts-l3-trailing-percent" step="0.1" min="0.1" max="50" value="3.0">
+                            </div>
+                        </div>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label class="form-label" style="display: flex; align-items: center; gap: 12px;">
+                                <span>启用追踪止损</span>
+                                <label class="toggle">
+                                    <input type="checkbox" id="ts-l3-trailing-enabled" checked>
+                                    <span class="toggle-slider"></span>
+                                </label>
+                            </label>
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary">保存止损配置</button>
+                </form>
             </div>
         </div>
     </div>
@@ -1119,12 +1202,111 @@
             }
         }
 
+        // ========== Trailing Stop Config ==========
+        
+        // Load trailing stop config
+        async function loadTrailingStopConfig() {
+            try {
+                const config = await apiCall('/config/trailing-stop');
+                
+                // 级别1
+                document.getElementById('ts-l1-profit-min').value = config.level_1.profit_min;
+                document.getElementById('ts-l1-profit-max').value = config.level_1.profit_max || '';
+                document.getElementById('ts-l1-lock-profit').value = config.level_1.lock_profit;
+                
+                // 级别2
+                document.getElementById('ts-l2-profit-min').value = config.level_2.profit_min;
+                document.getElementById('ts-l2-profit-max').value = config.level_2.profit_max || '';
+                document.getElementById('ts-l2-lock-profit').value = config.level_2.lock_profit;
+                
+                // 级别3
+                document.getElementById('ts-l3-profit-min').value = config.level_3.profit_min;
+                document.getElementById('ts-l3-lock-profit').value = config.level_3.lock_profit;
+                document.getElementById('ts-l3-trailing-percent').value = config.level_3.trailing_percent;
+                document.getElementById('ts-l3-trailing-enabled').checked = config.level_3.trailing_enabled;
+                
+                // 更新止损记录页面的规则说明
+                updateRuleDescriptions(config);
+            } catch (e) {
+                console.error('Failed to load trailing stop config:', e);
+            }
+        }
+        
+        // 更新止损规则说明
+        function updateRuleDescriptions(config) {
+            const l1 = config.level_1;
+            const l2 = config.level_2;
+            const l3 = config.level_3;
+            
+            // 级别1描述
+            const l1Max = l1.profit_max ? `~${l1.profit_max}%` : '以上';
+            const l1Lock = l1.lock_profit === 0 ? '止损提升至成本价，确保不亏损' : `锁定 ${l1.lock_profit}% 利润`;
+            document.getElementById('sl-rule-level1').textContent = 
+                `盈利达到 ${l1.profit_min}%${l1Max} 时，${l1Lock}`;
+            
+            // 级别2描述
+            const l2Max = l2.profit_max ? `~${l2.profit_max}%` : '以上';
+            document.getElementById('sl-rule-level2').textContent = 
+                `盈利达到 ${l2.profit_min}%${l2Max} 时，锁定 ${l2.lock_profit}% 利润`;
+            
+            // 级别3描述
+            const trailingDesc = l3.trailing_enabled ? `并启动追踪止损（回撤${l3.trailing_percent}%触发）` : '';
+            document.getElementById('sl-rule-level3').textContent = 
+                `盈利达到 ${l3.profit_min}% 以上，锁定 ${l3.lock_profit}% ${trailingDesc}`;
+        }
+        
+        // Save trailing stop config
+        document.getElementById('trailing-stop-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const data = {
+                    level_1: {
+                        profit_min: parseFloat(document.getElementById('ts-l1-profit-min').value),
+                        profit_max: parseFloat(document.getElementById('ts-l1-profit-max').value) || null,
+                        lock_profit: parseFloat(document.getElementById('ts-l1-lock-profit').value),
+                        trailing_enabled: false,
+                        trailing_percent: 3.0
+                    },
+                    level_2: {
+                        profit_min: parseFloat(document.getElementById('ts-l2-profit-min').value),
+                        profit_max: parseFloat(document.getElementById('ts-l2-profit-max').value) || null,
+                        lock_profit: parseFloat(document.getElementById('ts-l2-lock-profit').value),
+                        trailing_enabled: false,
+                        trailing_percent: 3.0
+                    },
+                    level_3: {
+                        profit_min: parseFloat(document.getElementById('ts-l3-profit-min').value),
+                        profit_max: null,
+                        lock_profit: parseFloat(document.getElementById('ts-l3-lock-profit').value),
+                        trailing_enabled: document.getElementById('ts-l3-trailing-enabled').checked,
+                        trailing_percent: parseFloat(document.getElementById('ts-l3-trailing-percent').value)
+                    }
+                };
+                
+                // 验证级别顺序
+                if (data.level_1.profit_min >= data.level_2.profit_min) {
+                    showToast('级别1的触发盈利必须小于级别2', 'error');
+                    return;
+                }
+                if (data.level_2.profit_min >= data.level_3.profit_min) {
+                    showToast('级别2的触发盈利必须小于级别3', 'error');
+                    return;
+                }
+                
+                const result = await apiCall('/config/trailing-stop', 'POST', data);
+                showToast(result.message || '移动止损配置已保存');
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        });
+
         // Initial load
         loadPairs();
         loadWsStatus();
         loadBalance();
         loadConfigStatus();
         loadStopLossLogs();
+        loadTrailingStopConfig();
         
         // Refresh periodically
         setInterval(loadWsStatus, 30000);
