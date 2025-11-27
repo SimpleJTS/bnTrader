@@ -623,7 +623,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <h2 class="card-title">添加交易对</h2>
-                <button class="modal-close" onclick="closeModal()">&times;</button>
+                <button class="modal-close" onclick="closeModal('add-pair-modal')">&times;</button>
             </div>
             <form id="add-pair-form">
                 <div class="form-group">
@@ -652,6 +652,45 @@
                     <input type="number" class="form-input" id="new-stop-loss" value="2" min="0.1" max="50" step="0.1">
                 </div>
                 <button type="submit" class="btn btn-primary" style="width: 100%;">添加</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Edit Pair Modal -->
+    <div class="modal" id="edit-pair-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="card-title">编辑交易对 - <span id="edit-symbol-title"></span></h2>
+                <button class="modal-close" onclick="closeModal('edit-pair-modal')">&times;</button>
+            </div>
+            <form id="edit-pair-form">
+                <input type="hidden" id="edit-symbol">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label class="form-label">杠杆</label>
+                        <input type="number" class="form-input" id="edit-leverage" min="1" max="125">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">K线周期</label>
+                        <select class="form-input" id="edit-interval">
+                            <option value="1m">1分钟</option>
+                            <option value="3m">3分钟</option>
+                            <option value="5m">5分钟</option>
+                            <option value="15m">15分钟</option>
+                            <option value="30m">30分钟</option>
+                            <option value="1h">1小时</option>
+                            <option value="4h">4小时</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">止损百分比</label>
+                    <input type="number" class="form-input" id="edit-stop-loss" min="0.1" max="50" step="0.1">
+                </div>
+                <div style="display: flex; gap: 12px;">
+                    <button type="submit" class="btn btn-primary" style="flex: 1;">保存修改</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('edit-pair-modal')">取消</button>
+                </div>
             </form>
         </div>
     </div>
@@ -712,6 +751,7 @@
                                     : '<span class="badge badge-danger">停用</span>'}
                         </td>
                         <td>
+                            <button class="btn btn-primary action-btn" onclick="showEditPairModal('${p.symbol}', ${p.leverage}, '${p.strategy_interval}', ${p.stop_loss_percent})">编辑</button>
                             <button class="btn btn-secondary action-btn" onclick="togglePair('${p.symbol}', ${!p.is_active})">
                                 ${p.is_active ? '停用' : '启用'}
                             </button>
@@ -752,8 +792,8 @@
             document.getElementById('add-pair-modal').classList.add('active');
         }
 
-        function closeModal() {
-            document.getElementById('add-pair-modal').classList.remove('active');
+        function closeModal(modalId) {
+            document.getElementById(modalId || 'add-pair-modal').classList.remove('active');
         }
 
         document.getElementById('add-pair-form').addEventListener('submit', async (e) => {
@@ -767,7 +807,34 @@
                     is_active: true
                 });
                 showToast('交易对已添加');
-                closeModal();
+                closeModal('add-pair-modal');
+                loadPairs();
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        });
+
+        // Edit pair modal
+        function showEditPairModal(symbol, leverage, interval, stopLoss) {
+            document.getElementById('edit-symbol').value = symbol;
+            document.getElementById('edit-symbol-title').textContent = symbol;
+            document.getElementById('edit-leverage').value = leverage;
+            document.getElementById('edit-interval').value = interval;
+            document.getElementById('edit-stop-loss').value = stopLoss;
+            document.getElementById('edit-pair-modal').classList.add('active');
+        }
+
+        document.getElementById('edit-pair-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const symbol = document.getElementById('edit-symbol').value;
+            try {
+                await apiCall(`/trading-pairs/${symbol}`, 'PUT', {
+                    leverage: parseInt(document.getElementById('edit-leverage').value),
+                    strategy_interval: document.getElementById('edit-interval').value,
+                    stop_loss_percent: parseFloat(document.getElementById('edit-stop-loss').value)
+                });
+                showToast(`${symbol} 配置已更新`);
+                closeModal('edit-pair-modal');
                 loadPairs();
             } catch (e) {
                 showToast(e.message, 'error');
