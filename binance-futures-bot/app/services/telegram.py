@@ -226,16 +226,33 @@ class TelegramChannelListener:
         self._client.add_event_handler(handler, events.NewMessage(chats=entity))
         logger.info("事件处理器已注册，开始监听消息...")
         
-        # 使用 Telethon 的 catch_up 来获取离线时的消息（可选）
-        # await self._client.catch_up()
-        
-        # 使用 Telethon 的正确方式保持事件循环运行
+        # 启动时获取最近几条历史消息进行测试解析
         try:
-            while self._running:
-                # 让 Telethon 处理事件
-                await asyncio.sleep(0.1)
+            logger.info("正在获取频道最近的历史消息进行测试...")
+            async for message in self._client.iter_messages(entity, limit=5):
+                if message.text:
+                    logger.info(f"[TG历史] 消息时间: {message.date}, 长度: {len(message.text)}")
+                    logger.info(f"[TG历史] 消息预览: {message.text[:300]}...")
+                    
+                    # 测试解析
+                    results = self.parse_message(message.text)
+                    if results:
+                        logger.info(f"[TG历史] 解析到 {len(results)} 个符合条件的交易对: {results}")
+                        # 注意：历史消息不触发回调，只是测试解析功能
+                    else:
+                        logger.info(f"[TG历史] 消息中未发现符合条件的交易对")
+        except Exception as e:
+            logger.error(f"获取历史消息失败: {e}", exc_info=True)
+        
+        # 关键：使用 run_until_disconnected() 让 Telethon 正确接收更新
+        # 这个方法会阻塞直到客户端断开连接
+        try:
+            logger.info("开始运行 Telethon 事件循环，等待新消息...")
+            await self._client.run_until_disconnected()
         except asyncio.CancelledError:
             logger.info("监听任务被取消")
+        except Exception as e:
+            logger.error(f"Telethon 事件循环异常: {e}", exc_info=True)
     
     async def start(self):
         """启动监听"""
@@ -253,15 +270,21 @@ class TelegramChannelListener:
         """停止监听"""
         self._running = False
         
+        # 先断开客户端连接，这会让 run_until_disconnected() 返回
+        if self._client:
+            try:
+                await self._client.disconnect()
+                logger.info("Telethon 客户端已断开连接")
+            except Exception as e:
+                logger.error(f"断开 Telethon 连接时出错: {e}")
+        
+        # 然后取消监听任务
         if self._listen_task:
             self._listen_task.cancel()
             try:
                 await self._listen_task
             except asyncio.CancelledError:
                 pass
-        
-        if self._client:
-            await self._client.disconnect()
         
         logger.info("频道监听器已停止")
 
