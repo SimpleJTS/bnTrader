@@ -141,16 +141,30 @@ class TelegramChannelListener:
         results = []
         matches = self.PATTERN.findall(text)
         
+        logger.debug(f"[TG频道] 正则匹配结果: {matches}")
+        
+        if not matches:
+            # 尝试找出消息中是否有类似的内容但格式不同
+            if "USDT" in text:
+                logger.debug(f"[TG频道] 消息包含USDT但正则未匹配，可能格式不同")
+            if "Price Change" in text or "price change" in text.lower():
+                logger.debug(f"[TG频道] 消息包含Price Change相关内容但正则未匹配")
+        
         for match in matches:
             symbol = match[0]
             try:
                 change_percent = float(match[1])
+                logger.info(f"[TG频道] 解析到: {symbol} 变化 {change_percent}%")
+                
                 # 关注24H价格变化绝对值超过30%的（涨跌都算）
                 if abs(change_percent) >= self.MIN_CHANGE_PERCENT:
                     results.append((symbol, change_percent))
                     direction = "涨幅" if change_percent > 0 else "跌幅"
                     logger.info(f"[{symbol}] 发现符合条件的交易对，{direction} {abs(change_percent)}%")
-            except ValueError:
+                else:
+                    logger.debug(f"[{symbol}] 变化 {change_percent}% 未达到阈值 {self.MIN_CHANGE_PERCENT}%")
+            except ValueError as e:
+                logger.warning(f"解析变化百分比失败: {match[1]}, 错误: {e}")
                 continue
         
         return results
@@ -166,26 +180,47 @@ class TelegramChannelListener:
         
         try:
             entity = await self._client.get_entity(channel)
-            logger.info(f"正在监听频道: {channel}")
+            logger.info(f"正在监听频道: {channel} (ID: {entity.id})")
         except Exception as e:
             logger.error(f"获取频道实体失败: {e}")
             return
         
-        @self._client.on(events.NewMessage(chats=entity))
+        # 保存 self 引用供事件处理器使用
+        listener = self
+        
         async def handler(event):
             try:
                 text = event.message.text or ""
-                results = self.parse_message(text)
+                logger.info(f"[TG频道] 收到新消息，长度: {len(text)}")
+                # 打印消息前200字符以便调试
+                logger.info(f"[TG频道] 消息预览: {text[:200]}...")
                 
-                for symbol, change_percent in results:
-                    await self._notify_callbacks(symbol, change_percent)
+                results = listener.parse_message(text)
+                
+                if results:
+                    logger.info(f"[TG频道] 解析到 {len(results)} 个符合条件的交易对: {results}")
+                    for symbol, change_percent in results:
+                        await listener._notify_callbacks(symbol, change_percent)
+                else:
+                    logger.info(f"[TG频道] 消息中未发现符合条件的交易对")
                     
             except Exception as e:
-                logger.error(f"消息处理异常: {e}")
+                logger.error(f"消息处理异常: {e}", exc_info=True)
         
-        # 保持运行
-        while self._running:
-            await asyncio.sleep(1)
+        # 使用 add_event_handler 而不是装饰器，确保正确注册
+        self._client.add_event_handler(handler, events.NewMessage(chats=entity))
+        logger.info("事件处理器已注册，开始监听消息...")
+        
+        # 使用 Telethon 的 catch_up 来获取离线时的消息（可选）
+        # await self._client.catch_up()
+        
+        # 使用 Telethon 的正确方式保持事件循环运行
+        try:
+            while self._running:
+                # 让 Telethon 处理事件
+                await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            logger.info("监听任务被取消")
     
     async def start(self):
         """启动监听"""
@@ -227,6 +262,8 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
     from app.models import TradingPair
     from sqlalchemy import select
     
+    logger.info(f"[{symbol}] 回调函数被调用，变化: {change_percent}%")
+    
     session = await DatabaseManager.get_session()
     try:
         # 检查是否已存在
@@ -236,8 +273,10 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         existing = result.scalar_one_or_none()
         
         if existing:
-            logger.info(f"[{symbol}] 交易对已存在，跳过添加")
+            logger.info(f"[{symbol}] 交易对已存在（is_active={existing.is_active}），跳过添加")
             return
+        
+        logger.info(f"[{symbol}] 交易对不存在，准备添加...")
         
         # 添加新交易对
         new_pair = TradingPair(
@@ -250,13 +289,14 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         session.add(new_pair)
         await session.commit()
         
-        logger.info(f"[{symbol}] 已添加新交易对")
+        logger.info(f"[{symbol}] 已成功添加新交易对到数据库")
         
         # 通知配置变更
         await config_manager.notify_observers("trading_pair_added", {
             "symbol": symbol,
             "interval": settings.DEFAULT_STRATEGY_INTERVAL
         })
+        logger.info(f"[{symbol}] 已通知观察者配置变更")
         
         # TG通知
         direction = "📈 涨幅" if change_percent > 0 else "📉 跌幅"
@@ -269,7 +309,7 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         await telegram_service.send_message(msg)
         
     except Exception as e:
-        logger.error(f"[{symbol}] 添加新交易对失败: {e}")
+        logger.error(f"[{symbol}] 添加新交易对失败: {e}", exc_info=True)
         await session.rollback()
     finally:
         await session.close()
