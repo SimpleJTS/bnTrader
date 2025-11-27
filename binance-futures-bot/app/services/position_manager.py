@@ -5,6 +5,7 @@
 import asyncio
 import logging
 from datetime import datetime
+from decimal import Decimal
 from typing import Optional, Dict, List
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -88,14 +89,46 @@ class PositionManager:
             logger.info(f"Market order placed: {order_result}")
             
             # 获取实际成交价格
-            actual_price = float(order_result.get("avgPrice", entry_price))
-            actual_qty = float(order_result.get("executedQty", quantity))
+            # 优先使用avgPrice，如果为0则通过累计成交额/累计成交量计算，最后使用entry_price
+            avg_price_str = order_result.get("avgPrice", "0")
+            actual_price = float(avg_price_str) if avg_price_str else 0
+            
+            if actual_price <= 0:
+                # 尝试通过累计成交额/成交量计算均价
+                cum_quote = float(order_result.get("cumQuote", 0) or order_result.get("cummulativeQuoteQty", 0))
+                executed_qty = float(order_result.get("executedQty", 0))
+                if cum_quote > 0 and executed_qty > 0:
+                    actual_price = cum_quote / executed_qty
+                else:
+                    actual_price = entry_price
+                logger.warning(f"avgPrice not available, calculated price: {actual_price}")
+            
+            actual_qty = float(order_result.get("executedQty", 0))
+            if actual_qty <= 0:
+                actual_qty = quantity
+                logger.warning(f"executedQty not available, using quantity: {actual_qty}")
+            
+            # 验证成交价格和数量
+            if actual_price <= 0:
+                raise ValueError(f"Invalid execution price: {actual_price}")
+            if actual_qty <= 0:
+                raise ValueError(f"Invalid execution quantity: {actual_qty}")
+            
+            # 验证止损百分比
+            if stop_loss_percent <= 0 or stop_loss_percent >= 100:
+                raise ValueError(f"Invalid stop_loss_percent: {stop_loss_percent} (must be between 0 and 100)")
             
             # 计算止损价格
             if side == "LONG":
                 stop_loss_price = actual_price * (1 - stop_loss_percent / 100)
             else:
                 stop_loss_price = actual_price * (1 + stop_loss_percent / 100)
+            
+            # 验证止损价格
+            if stop_loss_price <= 0:
+                raise ValueError(f"Invalid stop_loss_price: {stop_loss_price} (entry={actual_price}, percent={stop_loss_percent}%)")
+            
+            logger.info(f"Setting stop loss: symbol={symbol}, side={side}, price={stop_loss_price}, qty={actual_qty}")
             
             # 设置止损单
             stop_side = "SELL" if side == "LONG" else "BUY"
@@ -293,9 +326,22 @@ class PositionManager:
                 except Exception as e:
                     logger.warning(f"Cancel old stop order error: {e}")
             
-            # 获取精度
-            price_precision, qty_precision, _, step_size = await binance_api.get_symbol_precision(symbol)
-            new_stop_price = binance_api.round_price(new_stop_price, price_precision)
+            # 获取精度信息
+            precision_info = await binance_api.get_symbol_precision(symbol)
+            formatted_price = binance_api.format_price(new_stop_price, precision_info)
+            
+            # 验证新止损价格
+            if Decimal(formatted_price) <= 0:
+                raise ValueError(f"Invalid new stop price: {new_stop_price} -> {formatted_price}")
+            
+            # 验证仓位数量
+            if position.quantity <= 0:
+                raise ValueError(f"Invalid position quantity: {position.quantity}")
+            
+            # 更新 new_stop_price 为格式化后的值
+            new_stop_price = float(formatted_price)
+            
+            logger.info(f"Updating stop loss: symbol={symbol}, new_price={new_stop_price}, qty={position.quantity}")
             
             # 设置新止损单
             stop_side = "SELL" if position.side == "LONG" else "BUY"

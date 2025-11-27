@@ -118,38 +118,112 @@ class BinanceAPI:
             await self.get_exchange_info()
         return self._symbol_info.get(symbol)
     
-    async def get_symbol_precision(self, symbol: str) -> tuple:
-        """获取交易对精度 (价格精度, 数量精度)"""
+    async def get_symbol_precision(self, symbol: str) -> dict:
+        """获取交易对精度信息
+        
+        Returns:
+            dict: {
+                'price_precision': int,      # 价格小数位数
+                'quantity_precision': int,   # 数量小数位数  
+                'tick_size': str,            # 价格最小变动单位
+                'step_size': str,            # 数量最小变动单位
+                'min_qty': str,              # 最小下单数量
+                'min_notional': str,         # 最小名义价值
+            }
+        """
         info = await self.get_symbol_info(symbol)
         if not info:
-            return (8, 8)  # 默认精度
+            logger.warning(f"Symbol {symbol} not found, using default precision")
+            return {
+                'price_precision': 8,
+                'quantity_precision': 8,
+                'tick_size': '0.00000001',
+                'step_size': '0.00000001',
+                'min_qty': '0.001',
+                'min_notional': '5',
+            }
         
-        price_precision = info.get("pricePrecision", 8)
-        quantity_precision = info.get("quantityPrecision", 8)
+        result = {
+            'price_precision': info.get("pricePrecision", 8),
+            'quantity_precision': info.get("quantityPrecision", 8),
+            'tick_size': '0.00000001',
+            'step_size': '0.00000001',
+            'min_qty': '0.001',
+            'min_notional': '5',
+        }
         
-        # 获取过滤器中的最小数量
-        min_qty = 0.001
-        step_size = 0.001
+        # 从过滤器获取精确的精度信息
         for f in info.get("filters", []):
-            if f["filterType"] == "LOT_SIZE":
-                min_qty = float(f["minQty"])
-                step_size = float(f["stepSize"])
-                break
+            filter_type = f.get("filterType")
+            if filter_type == "PRICE_FILTER":
+                result['tick_size'] = f.get("tickSize", result['tick_size'])
+            elif filter_type == "LOT_SIZE":
+                result['step_size'] = f.get("stepSize", result['step_size'])
+                result['min_qty'] = f.get("minQty", result['min_qty'])
+            elif filter_type == "MIN_NOTIONAL":
+                result['min_notional'] = f.get("notional", result['min_notional'])
         
-        return (price_precision, quantity_precision, min_qty, step_size)
+        logger.debug(f"Symbol {symbol} precision: {result}")
+        return result
     
-    def round_quantity(self, quantity: float, precision: int, step_size: float) -> float:
-        """按精度舍入数量"""
-        # 使用step_size进行对齐
-        decimal_places = len(str(step_size).split('.')[-1].rstrip('0'))
-        quantity = Decimal(str(quantity))
-        step = Decimal(str(step_size))
-        rounded = (quantity / step).to_integral_value(rounding=ROUND_DOWN) * step
-        return float(rounded)
+    def round_step(self, value: float, step: str) -> Decimal:
+        """按步长对齐数值（向下取整）
+        
+        Args:
+            value: 原始数值
+            step: 步长（如 "0.001", "0.00001"）
+        
+        Returns:
+            对齐后的 Decimal 值
+        """
+        value_dec = Decimal(str(value))
+        step_dec = Decimal(step)
+        
+        # 向下取整到步长的整数倍
+        rounded = (value_dec / step_dec).to_integral_value(rounding=ROUND_DOWN) * step_dec
+        return rounded
     
-    def round_price(self, price: float, precision: int) -> float:
-        """按精度舍入价格"""
-        return round(price, precision)
+    def format_quantity(self, quantity: float, precision_info: dict) -> str:
+        """格式化下单数量
+        
+        Args:
+            quantity: 原始数量
+            precision_info: get_symbol_precision 返回的精度信息
+        
+        Returns:
+            格式化后的数量字符串
+        """
+        step_size = precision_info['step_size']
+        rounded = self.round_step(quantity, step_size)
+        
+        # 计算小数位数
+        if '.' in step_size:
+            decimal_places = len(step_size.rstrip('0').split('.')[1]) if '.' in step_size.rstrip('0') else 0
+        else:
+            decimal_places = 0
+        
+        # 格式化为字符串，去除多余的0
+        if decimal_places > 0:
+            return f"{rounded:.{decimal_places}f}"
+        else:
+            return str(int(rounded))
+    
+    def format_price(self, price: float, precision_info: dict) -> str:
+        """格式化下单价格
+        
+        Args:
+            price: 原始价格
+            precision_info: get_symbol_precision 返回的精度信息
+        
+        Returns:
+            格式化后的价格字符串
+        """
+        tick_size = precision_info['tick_size']
+        rounded = self.round_step(price, tick_size)
+        
+        # 使用 price_precision 来格式化
+        precision = precision_info['price_precision']
+        return f"{rounded:.{precision}f}".rstrip('0').rstrip('.')
     
     async def get_account_balance(self) -> Dict[str, float]:
         """获取账户余额"""
@@ -225,15 +299,23 @@ class BinanceAPI:
             quantity: 数量
             reduce_only: 是否仅减仓
         """
+        # 获取精度信息并格式化数量
+        precision_info = await self.get_symbol_precision(symbol)
+        formatted_qty = self.format_quantity(quantity, precision_info)
+        
+        if Decimal(formatted_qty) <= 0:
+            raise ValueError(f"Invalid quantity: {quantity} -> {formatted_qty}")
+        
         params = {
             "symbol": symbol,
             "side": side,
             "type": "MARKET",
-            "quantity": quantity
+            "quantity": formatted_qty
         }
         if reduce_only:
             params["reduceOnly"] = "true"
         
+        logger.info(f"Placing market order: {params}")
         return await self._request("POST", "/fapi/v1/order", params, signed=True)
     
     async def place_stop_loss_order(self, symbol: str, side: str, quantity: float,
@@ -247,22 +329,38 @@ class BinanceAPI:
             stop_price: 触发价格
             close_position: 是否平全部仓位
         """
-        price_precision, qty_precision, _, step_size = await self.get_symbol_precision(symbol)
+        # 获取精度信息
+        precision_info = await self.get_symbol_precision(symbol)
+        
+        # 格式化止损价格
+        formatted_price = self.format_price(stop_price, precision_info)
+        if Decimal(formatted_price) <= 0:
+            raise ValueError(f"Invalid stop price: {stop_price} -> {formatted_price} (tick_size={precision_info['tick_size']})")
         
         params = {
             "symbol": symbol,
             "side": side,
             "type": "STOP_MARKET",
-            "stopPrice": self.round_price(stop_price, price_precision),
+            "stopPrice": formatted_price,
             "timeInForce": "GTE_GTC"
         }
         
         if close_position:
             params["closePosition"] = "true"
         else:
-            params["quantity"] = self.round_quantity(quantity, qty_precision, step_size)
+            # 格式化数量
+            formatted_qty = self.format_quantity(quantity, precision_info)
+            min_qty = Decimal(precision_info['min_qty'])
+            
+            if Decimal(formatted_qty) <= 0:
+                raise ValueError(f"Invalid quantity: {quantity} -> {formatted_qty} (step_size={precision_info['step_size']})")
+            if Decimal(formatted_qty) < min_qty:
+                raise ValueError(f"Quantity {formatted_qty} is less than minimum {min_qty}")
+            
+            params["quantity"] = formatted_qty
             params["reduceOnly"] = "true"
         
+        logger.info(f"Placing stop loss order: {params}")
         return await self._request("POST", "/fapi/v1/order", params, signed=True)
     
     async def cancel_order(self, symbol: str, order_id: str) -> dict:
@@ -294,6 +392,11 @@ class BinanceAPI:
         if position_percent is None:
             position_percent = settings.POSITION_SIZE_PERCENT
         
+        # 获取精度信息
+        precision_info = await self.get_symbol_precision(symbol)
+        min_qty = Decimal(precision_info['min_qty'])
+        min_notional = Decimal(precision_info['min_notional'])
+        
         # 获取USDT余额
         usdt_balance = await self.get_usdt_balance()
         
@@ -303,19 +406,29 @@ class BinanceAPI:
         # 获取当前价格
         current_price = await self.get_current_price(symbol)
         
+        if current_price <= 0:
+            logger.error(f"Invalid current price for {symbol}: {current_price}")
+            return 0
+        
         # 计算数量 (资金 * 杠杆 / 价格)
         quantity = (available_funds * leverage) / current_price
         
-        # 获取精度并舍入
-        price_precision, qty_precision, min_qty, step_size = await self.get_symbol_precision(symbol)
-        quantity = self.round_quantity(quantity, qty_precision, step_size)
+        # 按精度格式化
+        formatted_qty = self.format_quantity(quantity, precision_info)
+        quantity_dec = Decimal(formatted_qty)
         
         # 确保不小于最小数量
-        if quantity < min_qty:
-            logger.warning(f"Calculated quantity {quantity} is less than min_qty {min_qty}")
+        if quantity_dec < min_qty:
+            logger.warning(f"Calculated quantity {formatted_qty} is less than min_qty {min_qty}")
             return 0
         
-        return quantity
+        # 检查最小名义价值 (quantity * price >= min_notional)
+        notional = quantity_dec * Decimal(str(current_price))
+        if notional < min_notional:
+            logger.warning(f"Order notional {notional} is less than min_notional {min_notional}")
+            return 0
+        
+        return float(quantity_dec)
 
 
 # 全局实例
