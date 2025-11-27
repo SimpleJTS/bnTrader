@@ -247,20 +247,31 @@ class BinanceAPI:
             stop_price: 触发价格
             close_position: 是否平全部仓位
         """
-        price_precision, qty_precision, _, step_size = await self.get_symbol_precision(symbol)
+        price_precision, qty_precision, min_qty, step_size = await self.get_symbol_precision(symbol)
+        
+        # 验证止损价格
+        rounded_stop_price = self.round_price(stop_price, price_precision)
+        if rounded_stop_price <= 0:
+            raise ValueError(f"Invalid stop price: {stop_price} (rounded to {rounded_stop_price})")
         
         params = {
             "symbol": symbol,
             "side": side,
             "type": "STOP_MARKET",
-            "stopPrice": self.round_price(stop_price, price_precision),
+            "stopPrice": rounded_stop_price,
             "timeInForce": "GTE_GTC"
         }
         
         if close_position:
             params["closePosition"] = "true"
         else:
-            params["quantity"] = self.round_quantity(quantity, qty_precision, step_size)
+            # 验证数量
+            rounded_quantity = self.round_quantity(quantity, qty_precision, step_size)
+            if rounded_quantity <= 0:
+                raise ValueError(f"Invalid quantity: {quantity} (rounded to {rounded_quantity}, min_qty={min_qty}, step_size={step_size})")
+            if rounded_quantity < min_qty:
+                raise ValueError(f"Quantity {rounded_quantity} is less than minimum {min_qty}")
+            params["quantity"] = rounded_quantity
             params["reduceOnly"] = "true"
         
         return await self._request("POST", "/fapi/v1/order", params, signed=True)
