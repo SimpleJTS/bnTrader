@@ -8,9 +8,10 @@ from typing import Dict, Optional
 from datetime import datetime
 
 from app.config import settings
+from app.database import DatabaseManager
 from app.services.binance_api import binance_api
 from app.services.position_manager import position_manager
-from app.models import Position
+from app.models import Position, StopLossLog
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +67,17 @@ class TrailingStopManager:
         new_stop_price = None
         new_level = current_level
         is_trailing = position.is_trailing_active
+        adjust_reason = None
+        adjust_detail = None
+        locked_profit = None
         
         # 级别1: 盈利2.5%~5%，止损提到成本价
         if 2.5 <= profit_percent < 5.0 and current_level < 1:
             new_stop_price = position.entry_price
             new_level = 1
+            locked_profit = 0.0
+            adjust_reason = "盈利保护 - 止损提至成本价"
+            adjust_detail = f"当前盈利达到{profit_percent:.2f}%（触发阈值2.5%），止损从{position.stop_loss_price:.6f}提升至成本价{position.entry_price:.6f}，确保不亏损"
             logger.info(f"[{symbol}] 触发级别1: 盈利{profit_percent:.2f}%，止损提升至成本价 {new_stop_price}")
         
         # 级别2: 盈利5%~10%，锁定约3%利润
@@ -83,6 +90,9 @@ class TrailingStopManager:
                 lock_profit = 3.0 / position.leverage
                 new_stop_price = position.entry_price * (1 - lock_profit / 100)
             new_level = 2
+            locked_profit = 3.0
+            adjust_reason = "锁定利润 - 保护3%收益"
+            adjust_detail = f"当前盈利达到{profit_percent:.2f}%（触发阈值5%），锁定3%利润，止损价设为{new_stop_price:.6f}（价格变动{lock_profit:.4f}%）"
             logger.info(f"[{symbol}] 触发级别2: 盈利{profit_percent:.2f}%，锁定3%利润，止损价 {new_stop_price}")
         
         # 级别3: 盈利≥10%，锁定5%并启动追踪
@@ -96,6 +106,9 @@ class TrailingStopManager:
                 new_stop_price = position.entry_price * (1 - lock_profit / 100)
             new_level = 3
             is_trailing = True
+            locked_profit = 5.0
+            adjust_reason = "启动追踪止损 - 锁定5%收益"
+            adjust_detail = f"当前盈利达到{profit_percent:.2f}%（触发阈值10%），锁定5%利润并启动追踪止损模式，止损价设为{new_stop_price:.6f}，后续将跟随价格上涨（回撤3%触发）"
             logger.info(f"[{symbol}] 触发级别3: 盈利{profit_percent:.2f}%，锁定5%利润并启动追踪止损，止损价 {new_stop_price}")
         
         # 追踪止损逻辑: 价格回撤3%触发
@@ -108,6 +121,10 @@ class TrailingStopManager:
                 # 只有新止损更高才更新
                 if trailing_stop > position.stop_loss_price:
                     new_stop_price = trailing_stop
+                    # 计算锁定的利润百分比
+                    locked_profit = ((trailing_stop - position.entry_price) / position.entry_price) * 100 * position.leverage
+                    adjust_reason = "追踪止损上移"
+                    adjust_detail = f"价格创新高{highest:.6f}，止损跟随上移至{new_stop_price:.6f}（回撤{trailing_percent:.4f}%），当前锁定利润约{locked_profit:.2f}%"
                     logger.info(f"[{symbol}] 追踪止损更新: 最高价={highest}, 原止损={position.stop_loss_price} -> 新止损={new_stop_price}")
             else:
                 # 做空：从最低价反弹trailing_percent
@@ -115,16 +132,77 @@ class TrailingStopManager:
                 # 只有新止损更低才更新
                 if trailing_stop < position.stop_loss_price:
                     new_stop_price = trailing_stop
+                    # 计算锁定的利润百分比
+                    locked_profit = ((position.entry_price - trailing_stop) / position.entry_price) * 100 * position.leverage
+                    adjust_reason = "追踪止损下移"
+                    adjust_detail = f"价格创新低{highest:.6f}，止损跟随下移至{new_stop_price:.6f}（反弹{trailing_percent:.4f}%），当前锁定利润约{locked_profit:.2f}%"
                     logger.info(f"[{symbol}] 追踪止损更新: 最低价={highest}, 原止损={position.stop_loss_price} -> 新止损={new_stop_price}")
         
-        # 更新止损
-        if new_stop_price and new_stop_price != position.stop_loss_price:
+        # 更新止损并记录日志
+        if new_stop_price and new_stop_price != position.stop_loss_price and adjust_reason:
+            # 先记录止损调整日志
+            await self._log_stop_loss_adjustment(
+                position=position,
+                old_stop_price=position.stop_loss_price,
+                new_stop_price=new_stop_price,
+                current_price=current_price,
+                profit_percent=profit_percent,
+                locked_profit_percent=locked_profit,
+                old_level=current_level,
+                new_level=new_level,
+                is_trailing=is_trailing,
+                adjust_reason=adjust_reason,
+                adjust_detail=adjust_detail
+            )
+            
+            # 更新止损
             await position_manager.update_stop_loss(
                 symbol=symbol,
                 new_stop_price=new_stop_price,
                 level=new_level,
                 is_trailing=is_trailing
             )
+    
+    async def _log_stop_loss_adjustment(
+        self,
+        position: Position,
+        old_stop_price: float,
+        new_stop_price: float,
+        current_price: float,
+        profit_percent: float,
+        locked_profit_percent: Optional[float],
+        old_level: int,
+        new_level: int,
+        is_trailing: bool,
+        adjust_reason: str,
+        adjust_detail: str
+    ):
+        """记录止损调整日志到数据库"""
+        session = await DatabaseManager.get_session()
+        try:
+            log = StopLossLog(
+                symbol=position.symbol,
+                side=position.side,
+                entry_price=position.entry_price,
+                old_stop_price=old_stop_price,
+                new_stop_price=new_stop_price,
+                current_price=current_price,
+                profit_percent=profit_percent,
+                locked_profit_percent=locked_profit_percent,
+                old_level=old_level,
+                new_level=new_level,
+                is_trailing=is_trailing,
+                adjust_reason=adjust_reason,
+                adjust_detail=adjust_detail
+            )
+            session.add(log)
+            await session.commit()
+            logger.debug(f"[{position.symbol}] 止损调整日志已记录: {adjust_reason}")
+        except Exception as e:
+            logger.error(f"[{position.symbol}] 记录止损调整日志失败: {e}")
+            await session.rollback()
+        finally:
+            await session.close()
     
     async def _check_loop(self):
         """止损检查循环"""
