@@ -52,6 +52,7 @@ docker run -d \
   --name binance-bot \
   -p 8000:8000 \
   -v $(pwd)/data:/app/data \
+  -v $(pwd)/logs:/app/logs \
   -e BINANCE_API_KEY=your_api_key \
   -e BINANCE_API_SECRET=your_api_secret \
   -e TG_BOT_TOKEN=your_bot_token \
