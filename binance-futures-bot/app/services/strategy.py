@@ -35,10 +35,11 @@ class EMAStrategy:
     
     规则:
     1. 检测当前K线的EMA6和EMA51是否相交
-    2. 如果相交，判断是金叉还是死叉
-    3. 检查前20根K线中EMA6和EMA51的交叉次数
-    4. 如果金叉且交叉次数<2，则做多
-    5. 如果死叉且交叉次数<2，则做空
+    2. 如果当前K线没有相交，不开仓
+    3. 如果相交，判断是金叉还是死叉
+    4. 检查前20根K线中EMA6和EMA51的交叉次数
+    5. 如果金叉且交叉次数>2，则做多
+    6. 如果死叉且交叉次数>2，则做空
     """
     
     def __init__(self, fast_period: int = 6, slow_period: int = 51, lookback: int = 20):
@@ -176,7 +177,8 @@ class EMAStrategy:
         cross_count = self.count_crosses(ema_fast, ema_slow, current_index)
         
         # 判断信号
-        if cross_type == "GOLDEN" and cross_count < 2:
+        # 当前K线有交叉，且前20根K线交叉次数>2次，才开仓
+        if cross_type == "GOLDEN" and cross_count > 2:
             return StrategySignal(
                 signal_type=SignalType.LONG,
                 symbol=symbol,
@@ -184,9 +186,9 @@ class EMAStrategy:
                 ema_fast=current_ema_fast,
                 ema_slow=current_ema_slow,
                 cross_count=cross_count,
-                message=f"金叉信号! EMA{self.fast_period}上穿EMA{self.slow_period}, 前{self.lookback}根K线交叉{cross_count}次"
+                message=f"金叉信号! EMA{self.fast_period}上穿EMA{self.slow_period}, 前{self.lookback}根K线交叉{cross_count}次(>2次)"
             )
-        elif cross_type == "DEATH" and cross_count < 2:
+        elif cross_type == "DEATH" and cross_count > 2:
             return StrategySignal(
                 signal_type=SignalType.SHORT,
                 symbol=symbol,
@@ -194,7 +196,7 @@ class EMAStrategy:
                 ema_fast=current_ema_fast,
                 ema_slow=current_ema_slow,
                 cross_count=cross_count,
-                message=f"死叉信号! EMA{self.fast_period}下穿EMA{self.slow_period}, 前{self.lookback}根K线交叉{cross_count}次"
+                message=f"死叉信号! EMA{self.fast_period}下穿EMA{self.slow_period}, 前{self.lookback}根K线交叉{cross_count}次(>2次)"
             )
         else:
             return StrategySignal(
@@ -204,7 +206,7 @@ class EMAStrategy:
                 ema_fast=current_ema_fast,
                 ema_slow=current_ema_slow,
                 cross_count=cross_count,
-                message=f"{cross_type}但交叉次数过多({cross_count}次>=2次), 不开仓"
+                message=f"{cross_type}但前{self.lookback}根K线交叉次数不足({cross_count}次<=2次), 不开仓"
             )
     
     def calculate_amplitude(self, klines: List[dict], lookback: int = 200) -> float:

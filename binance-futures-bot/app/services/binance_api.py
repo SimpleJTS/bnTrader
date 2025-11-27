@@ -252,7 +252,7 @@ class BinanceAPI:
         }
         return await self._request("POST", "/fapi/v1/leverage", params, signed=True)
     
-    async def set_margin_type(self, symbol: str, margin_type: str = "CROSSED") -> dict:
+    async def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> dict:
         """设置保证金模式 (CROSSED/ISOLATED)"""
         params = {
             "symbol": symbol,

@@ -73,8 +73,8 @@ class PositionManager:
             # 设置杠杆
             await binance_api.set_leverage(symbol, leverage)
             
-            # 设置全仓模式
-            await binance_api.set_margin_type(symbol, "CROSSED")
+            # 设置逐仓模式
+            await binance_api.set_margin_type(symbol, "ISOLATED")
             
             # 下单方向
             order_side = "BUY" if side == "LONG" else "SELL"
