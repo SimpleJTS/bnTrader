@@ -24,12 +24,24 @@ class BinanceAPI:
     TESTNET_URL = "https://testnet.binancefuture.com"
     
     def __init__(self):
-        self.api_key = settings.BINANCE_API_KEY
-        self.api_secret = settings.BINANCE_API_SECRET
-        self.base_url = self.TESTNET_URL if settings.BINANCE_TESTNET else self.BASE_URL
         self._exchange_info: Dict = {}
         self._symbol_info: Dict[str, Dict] = {}
         self._client: Optional[httpx.AsyncClient] = None
+    
+    @property
+    def api_key(self) -> str:
+        """动态获取API Key，支持运行时配置更新"""
+        return settings.BINANCE_API_KEY
+    
+    @property
+    def api_secret(self) -> str:
+        """动态获取API Secret，支持运行时配置更新"""
+        return settings.BINANCE_API_SECRET
+    
+    @property
+    def base_url(self) -> str:
+        """动态获取API基础URL，支持运行时切换测试网/主网"""
+        return self.TESTNET_URL if settings.BINANCE_TESTNET else self.BASE_URL
     
     async def get_client(self) -> httpx.AsyncClient:
         """获取HTTP客户端"""
