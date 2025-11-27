@@ -109,6 +109,7 @@ python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 1. **Bot Token**: 与 [@BotFather](https://t.me/BotFather) 对话创建Bot
 2. **Chat ID**: 与 [@userinfobot](https://t.me/userinfobot) 对话获取
 3. **API ID/Hash** (可选): 在 [my.telegram.org](https://my.telegram.org) 获取
+4. **Session文件**: 将 `tgsession.session` 放到 `data/` 目录下（会挂载到容器的 `/app/data/`）
 
 ## 🎯 使用指南
 
@@ -201,6 +202,9 @@ A: 该币种近200根K线振幅<7%，已自动停止交易以避免低波动行�
 
 ### Q: 如何使用测试网？
 A: 设置环境变量 `BINANCE_TESTNET=true`，使用测试网API密钥。
+
+### Q: 频道监听报错 "EOF when reading a line"？
+A: 把 `tgsession.session` 文件放到 `data/` 目录下，确保挂载到容器。
 
 ## 📝 更新日志
 

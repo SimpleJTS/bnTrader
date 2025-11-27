@@ -115,16 +115,31 @@ class TelegramChannelListener:
         
         try:
             from telethon import TelegramClient
-            from telethon.sessions import StringSession
+            import os
             
-            # 使用用户提供的session文件
+            # session文件路径: /app/data/tgsession.session
+            session_path = '/app/data/tgsession'
+            session_file = session_path + '.session'
+            
+            if not os.path.exists(session_file):
+                logger.error(f"Telethon session文件不存在: {session_file}")
+                return False
+            
+            logger.info(f"使用 session 文件: {session_file}")
             self._client = TelegramClient(
-                'tgsession',  # 对应 tgsession.session 文件
+                session_path,
                 settings.TG_API_ID,
                 settings.TG_API_HASH
             )
             
-            await self._client.start()
+            # 只连接，不尝试交互式登录
+            await self._client.connect()
+            
+            if not await self._client.is_user_authorized():
+                logger.error("Telethon session 未授权或已过期")
+                await self._client.disconnect()
+                return False
+            
             logger.info("Telethon 客户端已启动")
             return True
             
