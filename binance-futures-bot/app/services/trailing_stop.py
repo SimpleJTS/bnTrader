@@ -19,10 +19,10 @@ logger = logging.getLogger(__name__)
 class TrailingStopManager:
     """移动止损管理器
     
-    止损规则:
-    - 盈利 2.5%~5%: 止损提到成本价
-    - 盈利 5%~10%: 锁定约3%的利润
-    - 盈利 ≥10%: 锁定5%并启动追踪（价格回撤3%触发）
+    止损规则（基于价格变动百分比，不含杠杆）:
+    - 价格变动 2.5%~5%: 止损提到成本价
+    - 价格变动 5%~10%: 锁定3%价格利润
+    - 价格变动 ≥10%: 锁定5%价格利润并启动追踪（价格回撤3%触发）
     """
     
     def __init__(self):
@@ -32,14 +32,13 @@ class TrailingStopManager:
         self._check_interval = 5  # 检查间隔(秒)
     
     def calculate_profit_percent(self, position: Position, current_price: float) -> float:
-        """计算盈利百分比(考虑杠杆)"""
+        """计算盈利百分比(基于价格变动，不含杠杆)"""
         if position.side == "LONG":
-            raw_profit = ((current_price - position.entry_price) / position.entry_price) * 100
+            profit = ((current_price - position.entry_price) / position.entry_price) * 100
         else:
-            raw_profit = ((position.entry_price - current_price) / position.entry_price) * 100
+            profit = ((position.entry_price - current_price) / position.entry_price) * 100
         
-        # 乘以杠杆得到实际盈利
-        return raw_profit * position.leverage
+        return profit
     
     async def check_trailing_stop(self, position: Position, current_price: float):
         """检查并更新移动止损
@@ -71,49 +70,47 @@ class TrailingStopManager:
         adjust_detail = None
         locked_profit = None
         
-        # 级别1: 盈利2.5%~5%，止损提到成本价
+        # 级别1: 价格变动2.5%~5%，止损提到成本价
         if 2.5 <= profit_percent < 5.0 and current_level < 1:
             new_stop_price = position.entry_price
             new_level = 1
             locked_profit = 0.0
             adjust_reason = "盈利保护 - 止损提至成本价"
-            adjust_detail = f"当前盈利达到{profit_percent:.2f}%（触发阈值2.5%），止损从{position.stop_loss_price:.6f}提升至成本价{position.entry_price:.6f}，确保不亏损"
-            logger.info(f"[{symbol}] 触发级别1: 盈利{profit_percent:.2f}%，止损提升至成本价 {new_stop_price}")
+            adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值2.5%），止损从{position.stop_loss_price:.6f}提升至成本价{position.entry_price:.6f}，确保不亏损"
+            logger.info(f"[{symbol}] 触发级别1: 价格变动{profit_percent:.2f}%，止损提升至成本价 {new_stop_price}")
         
-        # 级别2: 盈利5%~10%，锁定约3%利润
+        # 级别2: 价格变动5%~10%，锁定3%价格利润
         elif 5.0 <= profit_percent < 10.0 and current_level < 2:
-            # 锁定3%利润意味着止损价格要锁定3%的盈利
+            # 锁定3%价格利润
+            lock_profit = 3.0
             if position.side == "LONG":
-                lock_profit = 3.0 / position.leverage  # 转换为价格变动百分比
                 new_stop_price = position.entry_price * (1 + lock_profit / 100)
             else:
-                lock_profit = 3.0 / position.leverage
                 new_stop_price = position.entry_price * (1 - lock_profit / 100)
             new_level = 2
             locked_profit = 3.0
-            adjust_reason = "锁定利润 - 保护3%收益"
-            adjust_detail = f"当前盈利达到{profit_percent:.2f}%（触发阈值5%），锁定3%利润，止损价设为{new_stop_price:.6f}（价格变动{lock_profit:.4f}%）"
-            logger.info(f"[{symbol}] 触发级别2: 盈利{profit_percent:.2f}%，锁定3%利润，止损价 {new_stop_price}")
+            adjust_reason = "锁定利润 - 保护3%价格收益"
+            adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值5%），锁定3%价格利润，止损价设为{new_stop_price:.6f}"
+            logger.info(f"[{symbol}] 触发级别2: 价格变动{profit_percent:.2f}%，锁定3%利润，止损价 {new_stop_price}")
         
-        # 级别3: 盈利≥10%，锁定5%并启动追踪
+        # 级别3: 价格变动≥10%，锁定5%并启动追踪
         elif profit_percent >= 10.0 and current_level < 3:
-            # 锁定5%利润
+            # 锁定5%价格利润
+            lock_profit = 5.0
             if position.side == "LONG":
-                lock_profit = 5.0 / position.leverage
                 new_stop_price = position.entry_price * (1 + lock_profit / 100)
             else:
-                lock_profit = 5.0 / position.leverage
                 new_stop_price = position.entry_price * (1 - lock_profit / 100)
             new_level = 3
             is_trailing = True
             locked_profit = 5.0
-            adjust_reason = "启动追踪止损 - 锁定5%收益"
-            adjust_detail = f"当前盈利达到{profit_percent:.2f}%（触发阈值10%），锁定5%利润并启动追踪止损模式，止损价设为{new_stop_price:.6f}，后续将跟随价格上涨（回撤3%触发）"
-            logger.info(f"[{symbol}] 触发级别3: 盈利{profit_percent:.2f}%，锁定5%利润并启动追踪止损，止损价 {new_stop_price}")
+            adjust_reason = "启动追踪止损 - 锁定5%价格收益"
+            adjust_detail = f"当前价格变动{profit_percent:.2f}%（触发阈值10%），锁定5%价格利润并启动追踪止损模式，止损价设为{new_stop_price:.6f}，后续将跟随价格变动（回撤3%触发）"
+            logger.info(f"[{symbol}] 触发级别3: 价格变动{profit_percent:.2f}%，锁定5%利润并启动追踪止损，止损价 {new_stop_price}")
         
         # 追踪止损逻辑: 价格回撤3%触发
         if is_trailing and current_level >= 3:
-            trailing_percent = 3.0 / position.leverage  # 转换为价格变动百分比
+            trailing_percent = 3.0  # 价格回撤3%
             
             if position.side == "LONG":
                 # 做多：从最高价回撤trailing_percent
@@ -121,10 +118,10 @@ class TrailingStopManager:
                 # 只有新止损更高才更新
                 if trailing_stop > position.stop_loss_price:
                     new_stop_price = trailing_stop
-                    # 计算锁定的利润百分比
-                    locked_profit = ((trailing_stop - position.entry_price) / position.entry_price) * 100 * position.leverage
+                    # 计算锁定的价格利润百分比
+                    locked_profit = ((trailing_stop - position.entry_price) / position.entry_price) * 100
                     adjust_reason = "追踪止损上移"
-                    adjust_detail = f"价格创新高{highest:.6f}，止损跟随上移至{new_stop_price:.6f}（回撤{trailing_percent:.4f}%），当前锁定利润约{locked_profit:.2f}%"
+                    adjust_detail = f"价格创新高{highest:.6f}，止损跟随上移至{new_stop_price:.6f}（回撤{trailing_percent:.2f}%），当前锁定价格利润约{locked_profit:.2f}%"
                     logger.info(f"[{symbol}] 追踪止损更新: 最高价={highest}, 原止损={position.stop_loss_price} -> 新止损={new_stop_price}")
             else:
                 # 做空：从最低价反弹trailing_percent
@@ -132,10 +129,10 @@ class TrailingStopManager:
                 # 只有新止损更低才更新
                 if trailing_stop < position.stop_loss_price:
                     new_stop_price = trailing_stop
-                    # 计算锁定的利润百分比
-                    locked_profit = ((position.entry_price - trailing_stop) / position.entry_price) * 100 * position.leverage
+                    # 计算锁定的价格利润百分比
+                    locked_profit = ((position.entry_price - trailing_stop) / position.entry_price) * 100
                     adjust_reason = "追踪止损下移"
-                    adjust_detail = f"价格创新低{highest:.6f}，止损跟随下移至{new_stop_price:.6f}（反弹{trailing_percent:.4f}%），当前锁定利润约{locked_profit:.2f}%"
+                    adjust_detail = f"价格创新低{highest:.6f}，止损跟随下移至{new_stop_price:.6f}（反弹{trailing_percent:.2f}%），当前锁定价格利润约{locked_profit:.2f}%"
                     logger.info(f"[{symbol}] 追踪止损更新: 最低价={highest}, 原止损={position.stop_loss_price} -> 新止损={new_stop_price}")
         
         # 更新止损并记录日志
