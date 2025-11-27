@@ -15,6 +15,7 @@ from app.models import Position, TradingPair, TradeLog
 from app.services.binance_api import binance_api
 from app.services.telegram import telegram_service
 from app.config import settings
+from app.utils.helpers import format_price_full
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +171,7 @@ class PositionManager:
                 price=actual_price,
                 quantity=actual_qty,
                 order_id=str(order_result.get("orderId", "")),
-                message=f"开{side}仓: 价格={actual_price}, 数量={actual_qty}, 杠杆={leverage}x, 止损={stop_loss_price:.4f}",
+                message=f"开{side}仓: 价格={format_price_full(actual_price)}, 数量={actual_qty}, 杠杆={leverage}x, 止损={format_price_full(stop_loss_price)}",
                 extra_data={
                     "leverage": leverage,
                     "stop_loss_price": stop_loss_price,
@@ -185,10 +186,10 @@ class PositionManager:
                 f"🟢 **开仓通知**\n"
                 f"交易对: {symbol}\n"
                 f"方向: {'做多 📈' if side == 'LONG' else '做空 📉'}\n"
-                f"价格: {actual_price:.4f}\n"
+                f"价格: {format_price_full(actual_price)}\n"
                 f"数量: {actual_qty}\n"
                 f"杠杆: {leverage}x\n"
-                f"止损: {stop_loss_price:.4f} ({stop_loss_percent}%)"
+                f"止损: {format_price_full(stop_loss_price)} ({stop_loss_percent}%)"
             )
             await telegram_service.send_message(msg)
             
@@ -268,7 +269,7 @@ class PositionManager:
                 price=current_price,
                 quantity=position.quantity,
                 order_id=str(order_result.get("orderId", "")),
-                message=f"平仓: 价格={current_price}, 盈亏={pnl:.4f} USDT ({pnl_percent:.2f}%)",
+                message=f"平仓: 价格={format_price_full(current_price)}, 盈亏={format_price_full(pnl)} USDT ({pnl_percent:.2f}%)",
                 extra_data={
                     "entry_price": position.entry_price,
                     "pnl": pnl,
@@ -285,9 +286,9 @@ class PositionManager:
                 f"{emoji} **平仓通知**\n"
                 f"交易对: {symbol}\n"
                 f"方向: {'做多' if position.side == 'LONG' else '做空'}\n"
-                f"入场价: {position.entry_price:.4f}\n"
-                f"平仓价: {current_price:.4f}\n"
-                f"盈亏: {pnl:.4f} USDT ({pnl_percent:.2f}%)\n"
+                f"入场价: {format_price_full(position.entry_price)}\n"
+                f"平仓价: {format_price_full(current_price)}\n"
+                f"盈亏: {format_price_full(pnl)} USDT ({pnl_percent:.2f}%)\n"
                 f"原因: {reason}"
             )
             await telegram_service.send_message(msg)
@@ -385,7 +386,7 @@ class PositionManager:
                 symbol=symbol,
                 action="STOP_LOSS_ADJUST",
                 price=new_stop_price,
-                message=f"止损调整: {old_stop:.4f} -> {new_stop_price:.4f}, 级别={level}, 追踪={is_trailing}",
+                message=f"止损调整: {format_price_full(old_stop)} -> {format_price_full(new_stop_price)}, 级别={level}, 追踪={is_trailing}",
                 extra_data={
                     "old_stop_price": old_stop,
                     "new_stop_price": new_stop_price,
@@ -400,8 +401,8 @@ class PositionManager:
             msg = (
                 f"🔔 **止损调整**\n"
                 f"交易对: {symbol}\n"
-                f"原止损: {old_stop:.4f}\n"
-                f"新止损: {new_stop_price:.4f}\n"
+                f"原止损: {format_price_full(old_stop)}\n"
+                f"新止损: {format_price_full(new_stop_price)}\n"
                 f"级别: {level if level else '初始'}\n"
                 f"追踪止损: {'是' if is_trailing else '否'}"
             )
