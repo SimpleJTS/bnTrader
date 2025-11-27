@@ -27,11 +27,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 复制应用代码
 COPY app/ ./app/
 
-# 复制session生成脚本
-COPY generate_session.py ./
-
 # 创建数据和日志目录
-# session文件应放在 /app/data/tgsession.session
 RUN mkdir -p /app/data /app/logs
 
 # 暴露端口
