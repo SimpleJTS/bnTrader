@@ -1309,6 +1309,7 @@
         loadTrailingStopConfig();
         
         // Refresh periodically
+        setInterval(loadPairs, 30000);  // 每30秒刷新交易对列表
         setInterval(loadWsStatus, 30000);
         setInterval(loadBalance, 60000);
         setInterval(loadConfigStatus, 60000);

@@ -100,12 +100,14 @@ class TelegramChannelListener:
         """通知回调"""
         for callback in self._callbacks:
             try:
+                logger.info(f"[{symbol}] 正在执行回调函数...")
                 if asyncio.iscoroutinefunction(callback):
                     await callback(symbol, change_percent)
                 else:
                     callback(symbol, change_percent)
+                logger.info(f"[{symbol}] 回调函数执行完成")
             except Exception as e:
-                logger.error(f"频道监听器回调异常: {e}")
+                logger.error(f"频道监听器回调异常: {e}", exc_info=True)
     
     async def initialize(self) -> bool:
         """初始化Telethon客户端"""
@@ -226,19 +228,22 @@ class TelegramChannelListener:
         self._client.add_event_handler(handler, events.NewMessage(chats=entity))
         logger.info("事件处理器已注册，开始监听消息...")
         
-        # 启动时获取最近几条历史消息进行测试解析
+        # 启动时获取最近几条历史消息并处理
         try:
-            logger.info("正在获取频道最近的历史消息进行测试...")
+            logger.info("正在获取频道最近的历史消息...")
             async for message in self._client.iter_messages(entity, limit=5):
                 if message.text:
                     logger.info(f"[TG历史] 消息时间: {message.date}, 长度: {len(message.text)}")
                     logger.info(f"[TG历史] 消息预览: {message.text[:300]}...")
                     
-                    # 测试解析
+                    # 解析并处理历史消息
                     results = self.parse_message(message.text)
                     if results:
                         logger.info(f"[TG历史] 解析到 {len(results)} 个符合条件的交易对: {results}")
-                        # 注意：历史消息不触发回调，只是测试解析功能
+                        # 历史消息也触发回调，添加到交易对列表
+                        for symbol, change_percent in results:
+                            logger.info(f"[TG历史] 准备添加交易对: {symbol}")
+                            await self._notify_callbacks(symbol, change_percent)
                     else:
                         logger.info(f"[TG历史] 消息中未发现符合条件的交易对")
         except Exception as e:
@@ -300,10 +305,14 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
     from app.models import TradingPair
     from sqlalchemy import select
     
-    logger.info(f"[{symbol}] 回调函数被调用，变化: {change_percent}%")
+    logger.info(f"[{symbol}] ========== 回调函数开始执行 ==========")
+    logger.info(f"[{symbol}] 变化幅度: {change_percent}%")
     
-    session = await DatabaseManager.get_session()
+    session = None
     try:
+        session = await DatabaseManager.get_session()
+        logger.info(f"[{symbol}] 数据库会话已获取")
+        
         # 检查是否已存在
         result = await session.execute(
             select(TradingPair).where(TradingPair.symbol == symbol)
@@ -311,10 +320,11 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         existing = result.scalar_one_or_none()
         
         if existing:
-            logger.info(f"[{symbol}] 交易对已存在（is_active={existing.is_active}），跳过添加")
+            logger.info(f"[{symbol}] 交易对已存在（id={existing.id}, is_active={existing.is_active}），跳过添加")
             return
         
-        logger.info(f"[{symbol}] 交易对不存在，准备添加...")
+        logger.info(f"[{symbol}] 交易对不存在，准备添加到数据库...")
+        logger.info(f"[{symbol}] 配置: leverage={settings.DEFAULT_LEVERAGE}, interval={settings.DEFAULT_STRATEGY_INTERVAL}, stop_loss={settings.DEFAULT_STOP_LOSS_PERCENT}%")
         
         # 添加新交易对
         new_pair = TradingPair(
@@ -325,16 +335,19 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
             is_active=True
         )
         session.add(new_pair)
-        await session.commit()
+        logger.info(f"[{symbol}] 准备提交数据库事务...")
         
-        logger.info(f"[{symbol}] 已成功添加新交易对到数据库")
+        await session.commit()
+        await session.refresh(new_pair)
+        
+        logger.info(f"[{symbol}] ✓ 已成功添加新交易对到数据库 (id={new_pair.id})")
         
         # 通知配置变更
         await config_manager.notify_observers("trading_pair_added", {
             "symbol": symbol,
             "interval": settings.DEFAULT_STRATEGY_INTERVAL
         })
-        logger.info(f"[{symbol}] 已通知观察者配置变更")
+        logger.info(f"[{symbol}] ✓ 已通知观察者配置变更")
         
         # TG通知
         direction = "📈 涨幅" if change_percent > 0 else "📉 跌幅"
@@ -345,12 +358,18 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
             f"来源: TG频道监听"
         )
         await telegram_service.send_message(msg)
+        logger.info(f"[{symbol}] ✓ 已发送Telegram通知")
         
     except Exception as e:
-        logger.error(f"[{symbol}] 添加新交易对失败: {e}", exc_info=True)
-        await session.rollback()
+        logger.error(f"[{symbol}] ✗ 添加新交易对失败: {e}", exc_info=True)
+        if session:
+            await session.rollback()
+            logger.info(f"[{symbol}] 数据库事务已回滚")
     finally:
-        await session.close()
+        if session:
+            await session.close()
+            logger.info(f"[{symbol}] 数据库会话已关闭")
+        logger.info(f"[{symbol}] ========== 回调函数执行结束 ==========")
 
 
 # 注册回调
