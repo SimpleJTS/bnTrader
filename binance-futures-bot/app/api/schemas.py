@@ -118,6 +118,30 @@ class TradeLogResponse(BaseModel):
         from_attributes = True
 
 
+# ========== Stop Loss Log ==========
+
+class StopLossLogResponse(BaseModel):
+    """止损调整记录响应"""
+    id: int
+    symbol: str
+    side: str
+    entry_price: float
+    old_stop_price: Optional[float]
+    new_stop_price: float
+    current_price: Optional[float]
+    profit_percent: Optional[float]
+    locked_profit_percent: Optional[float]
+    old_level: int
+    new_level: int
+    is_trailing: bool
+    adjust_reason: str
+    adjust_detail: Optional[str]
+    created_at: Optional[datetime]
+    
+    class Config:
+        from_attributes = True
+
+
 # ========== General Response ==========
 
 class MessageResponse(BaseModel):

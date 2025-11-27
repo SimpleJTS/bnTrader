@@ -8,11 +8,11 @@ from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db, DatabaseManager
-from app.models import TradingPair, Position, TradeLog, SystemConfig
+from app.models import TradingPair, Position, TradeLog, SystemConfig, StopLossLog
 from app.api.schemas import (
     TradingPairCreate, TradingPairUpdate, TradingPairResponse,
     BinanceConfigUpdate, TelegramConfigUpdate, SystemConfigResponse,
-    PositionResponse, WebSocketStatus, TradeLogResponse,
+    PositionResponse, WebSocketStatus, TradeLogResponse, StopLossLogResponse,
     MessageResponse, ErrorResponse
 )
 from app.config import settings, config_manager
@@ -322,6 +322,59 @@ async def get_trade_logs(
         result = await session.execute(query)
         logs = result.scalars().all()
         return logs
+    finally:
+        await session.close()
+
+
+# ========== Stop Loss Logs ==========
+
+@router.get("/stop-loss-logs", response_model=List[StopLossLogResponse])
+async def get_stop_loss_logs(
+    symbol: Optional[str] = None,
+    limit: int = Query(default=100, le=500)
+):
+    """获取止损调整记录"""
+    session = await DatabaseManager.get_session()
+    try:
+        query = select(StopLossLog).order_by(StopLossLog.created_at.desc()).limit(limit)
+        if symbol:
+            query = query.where(StopLossLog.symbol == symbol.upper())
+        
+        result = await session.execute(query)
+        logs = result.scalars().all()
+        return logs
+    finally:
+        await session.close()
+
+
+@router.get("/stop-loss-logs/stats")
+async def get_stop_loss_stats():
+    """获取止损调整统计"""
+    session = await DatabaseManager.get_session()
+    try:
+        # 获取最近的调整记录数
+        result = await session.execute(
+            select(StopLossLog).order_by(StopLossLog.created_at.desc()).limit(100)
+        )
+        logs = result.scalars().all()
+        
+        # 统计各级别调整次数
+        level_counts = {0: 0, 1: 0, 2: 0, 3: 0}
+        trailing_count = 0
+        symbols = set()
+        
+        for log in logs:
+            level_counts[log.new_level] = level_counts.get(log.new_level, 0) + 1
+            if log.is_trailing:
+                trailing_count += 1
+            symbols.add(log.symbol)
+        
+        return {
+            "total_adjustments": len(logs),
+            "level_counts": level_counts,
+            "trailing_adjustments": trailing_count,
+            "symbols_affected": list(symbols)
+        }
     finally:
         await session.close()
 

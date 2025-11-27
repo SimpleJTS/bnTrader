@@ -471,7 +471,7 @@
 
         <div class="tabs">
             <button class="tab active" data-tab="trading">交易对</button>
-            <button class="tab" data-tab="positions">持仓</button>
+            <button class="tab" data-tab="stoploss">止损记录</button>
             <button class="tab" data-tab="logs">日志</button>
             <button class="tab" data-tab="config">配置</button>
         </div>
@@ -503,38 +503,71 @@
             </div>
         </div>
 
-        <!-- Positions Panel -->
-        <div class="panel" id="positions-panel">
+        <!-- Stop Loss Logs Panel -->
+        <div class="panel" id="stoploss-panel">
             <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="stat-label">持仓数量</div>
-                    <div class="stat-value" id="position-count">0</div>
+                    <div class="stat-label">调整次数</div>
+                    <div class="stat-value" id="sl-total-count">0</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">未实现盈亏</div>
-                    <div class="stat-value" id="unrealized-pnl">0.00</div>
+                    <div class="stat-label">追踪止损</div>
+                    <div class="stat-value" id="sl-trailing-count">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">级别1 (保本)</div>
+                    <div class="stat-value" id="sl-level1-count">0</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">级别2 (锁3%)</div>
+                    <div class="stat-value" id="sl-level2-count">0</div>
                 </div>
             </div>
             <div class="card">
                 <div class="card-header">
-                    <h2 class="card-title">当前持仓</h2>
-                    <button class="btn btn-secondary" onclick="loadPositions()">刷新</button>
+                    <h2 class="card-title">止损调整记录</h2>
+                    <div style="display: flex; gap: 12px; align-items: center;">
+                        <select class="form-input" id="sl-symbol-filter" style="width: 150px; padding: 8px;">
+                            <option value="">全部交易对</option>
+                        </select>
+                        <button class="btn btn-secondary" onclick="loadStopLossLogs()">刷新</button>
+                    </div>
                 </div>
-                <div class="table-container">
+                <div class="table-container" style="max-height: 600px; overflow-y: auto;">
                     <table>
                         <thead>
                             <tr>
+                                <th>时间</th>
                                 <th>交易对</th>
                                 <th>方向</th>
-                                <th>入场价</th>
-                                <th>数量</th>
-                                <th>止损价</th>
-                                <th>盈亏%</th>
-                                <th>操作</th>
+                                <th>调整原因</th>
+                                <th>原止损</th>
+                                <th>新止损</th>
+                                <th>当前盈利</th>
+                                <th>锁定利润</th>
                             </tr>
                         </thead>
-                        <tbody id="positions-table"></tbody>
+                        <tbody id="stoploss-table"></tbody>
                     </table>
+                </div>
+            </div>
+            
+            <!-- 止损规则说明 -->
+            <div class="card" style="margin-top: 20px;">
+                <h2 class="card-title" style="margin-bottom: 16px;">📋 止损调整规则</h2>
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+                    <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 3px solid var(--accent-yellow);">
+                        <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-yellow);">级别 1 - 保本止损</div>
+                        <div style="color: var(--text-secondary); font-size: 0.875rem;">盈利达到 2.5%~5% 时，止损提升至成本价，确保不亏损</div>
+                    </div>
+                    <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 3px solid var(--accent-blue);">
+                        <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-blue);">级别 2 - 锁定利润</div>
+                        <div style="color: var(--text-secondary); font-size: 0.875rem;">盈利达到 5%~10% 时，锁定 3% 利润</div>
+                    </div>
+                    <div style="background: var(--bg-tertiary); padding: 16px; border-radius: 8px; border-left: 3px solid var(--accent-green);">
+                        <div style="font-weight: 600; margin-bottom: 8px; color: var(--accent-green);">级别 3 - 追踪止损</div>
+                        <div style="color: var(--text-secondary); font-size: 0.875rem;">盈利达到 10% 以上，锁定 5% 并启动追踪止损（回撤3%触发）</div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -861,47 +894,88 @@
             }
         });
 
-        // Load positions
-        async function loadPositions() {
+        // Load stop loss logs
+        async function loadStopLossLogs() {
             try {
-                const positions = await apiCall('/positions?status=OPEN');
-                document.getElementById('position-count').textContent = positions.length;
+                const symbolFilter = document.getElementById('sl-symbol-filter').value;
+                const url = symbolFilter ? `/stop-loss-logs?symbol=${symbolFilter}` : '/stop-loss-logs';
+                const logs = await apiCall(url);
                 
-                const tbody = document.getElementById('positions-table');
-                if (positions.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary)">暂无持仓</td></tr>';
-                    return;
+                const tbody = document.getElementById('stoploss-table');
+                if (logs.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-secondary)">暂无止损调整记录</td></tr>';
+                } else {
+                    tbody.innerHTML = logs.map(log => {
+                        const levelBadge = getLevelBadge(log.new_level, log.is_trailing);
+                        const profitClass = (log.profit_percent || 0) >= 0 ? 'positive' : 'negative';
+                        return `
+                            <tr title="${log.adjust_detail || log.adjust_reason}" style="cursor: help;">
+                                <td style="white-space: nowrap;">${new Date(log.created_at).toLocaleString('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'})}</td>
+                                <td><strong>${log.symbol}</strong></td>
+                                <td><span class="badge ${log.side === 'LONG' ? 'badge-success' : 'badge-danger'}">${log.side === 'LONG' ? '多' : '空'}</span></td>
+                                <td>${levelBadge} ${log.adjust_reason}</td>
+                                <td>${log.old_stop_price ? log.old_stop_price.toFixed(6) : '-'}</td>
+                                <td><strong>${log.new_stop_price.toFixed(6)}</strong></td>
+                                <td class="${profitClass}">${log.profit_percent ? log.profit_percent.toFixed(2) + '%' : '-'}</td>
+                                <td class="positive">${log.locked_profit_percent != null ? log.locked_profit_percent.toFixed(2) + '%' : '-'}</td>
+                            </tr>
+                        `;
+                    }).join('');
                 }
                 
-                tbody.innerHTML = positions.map(p => `
-                    <tr>
-                        <td>${p.symbol}</td>
-                        <td><span class="badge ${p.side === 'LONG' ? 'badge-success' : 'badge-danger'}">${p.side === 'LONG' ? '做多' : '做空'}</span></td>
-                        <td>${p.entry_price.toFixed(4)}</td>
-                        <td>${p.quantity}</td>
-                        <td>${p.stop_loss_price ? p.stop_loss_price.toFixed(4) : '-'}</td>
-                        <td class="${p.pnl_percent >= 0 ? 'positive' : 'negative'}">${p.pnl_percent ? p.pnl_percent.toFixed(2) + '%' : '-'}</td>
-                        <td>
-                            <button class="btn btn-danger action-btn" onclick="closePosition('${p.symbol}')">平仓</button>
-                        </td>
-                    </tr>
-                `).join('');
+                // 更新统计
+                await loadStopLossStats();
+                
+                // 更新筛选下拉列表
+                updateSymbolFilter(logs);
             } catch (e) {
                 showToast(e.message, 'error');
             }
         }
-
-        // Close position
-        async function closePosition(symbol) {
-            if (!confirm(`确定平仓 ${symbol}?`)) return;
+        
+        // Get level badge HTML
+        function getLevelBadge(level, isTrailing) {
+            if (isTrailing) {
+                return '<span class="badge badge-success" style="font-size:0.7rem;">追踪</span>';
+            }
+            switch(level) {
+                case 1: return '<span class="badge badge-warning" style="font-size:0.7rem;">L1</span>';
+                case 2: return '<span class="badge badge-info" style="font-size:0.7rem;">L2</span>';
+                case 3: return '<span class="badge badge-success" style="font-size:0.7rem;">L3</span>';
+                default: return '<span class="badge" style="font-size:0.7rem;">初始</span>';
+            }
+        }
+        
+        // Load stop loss stats
+        async function loadStopLossStats() {
             try {
-                await apiCall(`/positions/${symbol}/close`, 'POST');
-                showToast(`${symbol} 已平仓`);
-                loadPositions();
+                const stats = await apiCall('/stop-loss-logs/stats');
+                document.getElementById('sl-total-count').textContent = stats.total_adjustments;
+                document.getElementById('sl-trailing-count').textContent = stats.trailing_adjustments;
+                document.getElementById('sl-level1-count').textContent = stats.level_counts[1] || 0;
+                document.getElementById('sl-level2-count').textContent = stats.level_counts[2] || 0;
             } catch (e) {
-                showToast(e.message, 'error');
+                console.error('Failed to load stop loss stats:', e);
             }
         }
+        
+        // Update symbol filter dropdown
+        function updateSymbolFilter(logs) {
+            const select = document.getElementById('sl-symbol-filter');
+            const currentValue = select.value;
+            const symbols = [...new Set(logs.map(l => l.symbol))].sort();
+            
+            // Keep current options if symbols haven't changed
+            const existingSymbols = Array.from(select.options).slice(1).map(o => o.value);
+            if (JSON.stringify(symbols) === JSON.stringify(existingSymbols)) return;
+            
+            // Rebuild options
+            select.innerHTML = '<option value="">全部交易对</option>' + 
+                symbols.map(s => `<option value="${s}" ${s === currentValue ? 'selected' : ''}>${s}</option>`).join('');
+        }
+        
+        // Symbol filter change handler
+        document.getElementById('sl-symbol-filter').addEventListener('change', loadStopLossLogs);
 
         // Load logs
         async function loadLogs() {
@@ -1050,11 +1124,13 @@
         loadWsStatus();
         loadBalance();
         loadConfigStatus();
+        loadStopLossLogs();
         
         // Refresh periodically
         setInterval(loadWsStatus, 30000);
         setInterval(loadBalance, 60000);
         setInterval(loadConfigStatus, 60000);
+        setInterval(loadStopLossLogs, 30000);  // 每30秒刷新止损记录
     </script>
 </body>
 </html>
