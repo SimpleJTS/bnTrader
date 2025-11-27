@@ -117,9 +117,9 @@ class TelegramChannelListener:
             from telethon import TelegramClient
             from telethon.sessions import StringSession
             
-            # 使用StringSession或文件session
+            # 使用用户提供的session文件
             self._client = TelegramClient(
-                'data/telegram_session',
+                'tgsession',  # 对应 tgsession.session 文件
                 settings.TG_API_ID,
                 settings.TG_API_HASH
             )
@@ -145,10 +145,11 @@ class TelegramChannelListener:
             symbol = match[0]
             try:
                 change_percent = float(match[1])
-                # 只关注涨幅超过30%的
-                if change_percent >= self.MIN_CHANGE_PERCENT:
+                # 关注24H价格变化绝对值超过30%的（涨跌都算）
+                if abs(change_percent) >= self.MIN_CHANGE_PERCENT:
                     results.append((symbol, change_percent))
-                    logger.info(f"[{symbol}] 发现符合条件的交易对，涨幅 {change_percent}%")
+                    direction = "涨幅" if change_percent > 0 else "跌幅"
+                    logger.info(f"[{symbol}] 发现符合条件的交易对，{direction} {abs(change_percent)}%")
             except ValueError:
                 continue
         
@@ -258,10 +259,11 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         })
         
         # TG通知
+        direction = "📈 涨幅" if change_percent > 0 else "📉 跌幅"
         msg = (
             f"🆕 **自动添加交易对**\n"
             f"交易对: {symbol}\n"
-            f"24H涨幅: {change_percent}%\n"
+            f"24H变化: {direction} {abs(change_percent)}%\n"
             f"来源: TG频道监听"
         )
         await telegram_service.send_message(msg)
