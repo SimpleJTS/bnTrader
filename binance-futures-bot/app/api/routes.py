@@ -15,11 +15,15 @@ from app.api.schemas import (
     PositionResponse, WebSocketStatus, TradeLogResponse, StopLossLogResponse,
     MessageResponse, ErrorResponse,
     TrailingStopConfig, TrailingStopConfigUpdate, TrailingStopLevel,
-    TGMonitorConfig, TGMonitorConfigUpdate
+    TGMonitorConfig, TGMonitorConfigUpdate,
+    ExchangeConfigUpdate, ExchangeConfigResponse, ExchangeInfo, HyperliquidConfigUpdate
 )
 from app.config import settings, config_manager
-from app.services.binance_api import binance_api
-from app.services.binance_ws import binance_ws
+from app.services.exchange_factory import (
+    get_exchange_api, get_exchange_ws, get_exchange_type,
+    get_exchange_display_name, get_supported_exchanges, switch_exchange
+)
+from app.services.exchange_interface import ExchangeType
 from app.services.position_manager import position_manager
 from app.services.telegram import telegram_service
 from app.utils.encryption import encrypt, encryption_manager
@@ -147,6 +151,113 @@ async def delete_trading_pair(symbol: str):
         })
         
         return MessageResponse(success=True, message=f"已删除交易对 {symbol}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await session.close()
+
+
+# ========== Exchange Config ==========
+
+@router.get("/config/exchange", response_model=ExchangeConfigResponse)
+async def get_exchange_config():
+    """获取交易所配置"""
+    current_type = get_exchange_type()
+    supported = get_supported_exchanges()
+    
+    return ExchangeConfigResponse(
+        current_exchange=current_type.value,
+        current_exchange_name=get_exchange_display_name(current_type),
+        supported_exchanges=[ExchangeInfo(**ex) for ex in supported]
+    )
+
+
+@router.post("/config/exchange", response_model=MessageResponse)
+async def update_exchange_config(data: ExchangeConfigUpdate):
+    """切换交易所"""
+    session = await DatabaseManager.get_session()
+    try:
+        exchange_lower = data.exchange.lower()
+        
+        # 验证交易所类型
+        if exchange_lower not in ["binance", "hyperliquid"]:
+            raise HTTPException(status_code=400, detail=f"不支持的交易所: {data.exchange}")
+        
+        # 保存到数据库
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == "EXCHANGE")
+        )
+        config = result.scalar_one_or_none()
+        
+        if config:
+            config.value = exchange_lower
+        else:
+            config = SystemConfig(
+                key="EXCHANGE",
+                value=exchange_lower,
+                description="当前使用的交易所"
+            )
+            session.add(config)
+        
+        await session.commit()
+        
+        # 切换交易所
+        exchange_type = ExchangeType.HYPERLIQUID if exchange_lower == "hyperliquid" else ExchangeType.BINANCE
+        success = await switch_exchange(exchange_type)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="切换交易所失败")
+        
+        exchange_name = get_exchange_display_name(exchange_type)
+        logger.info(f"已切换到交易所: {exchange_name}")
+        
+        return MessageResponse(success=True, message=f"已切换到 {exchange_name}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await session.close()
+
+
+@router.post("/config/hyperliquid", response_model=MessageResponse)
+async def update_hyperliquid_config(data: HyperliquidConfigUpdate):
+    """更新Hyperliquid配置（加密存储）"""
+    session = await DatabaseManager.get_session()
+    try:
+        # 验证私钥格式
+        if not data.private_key.startswith("0x"):
+            raise HTTPException(status_code=400, detail="私钥必须以0x开头")
+        
+        # 加密敏感数据后保存到数据库
+        configs = [
+            ("HYPERLIQUID_PRIVATE_KEY", encrypt(data.private_key), "Hyperliquid私钥 (加密)"),
+            ("HYPERLIQUID_TESTNET", str(data.testnet), "Hyperliquid是否使用测试网")
+        ]
+        
+        for key, value, desc in configs:
+            result = await session.execute(
+                select(SystemConfig).where(SystemConfig.key == key)
+            )
+            config = result.scalar_one_or_none()
+            if config:
+                config.value = value
+                config.description = desc
+            else:
+                config = SystemConfig(key=key, value=value, description=desc)
+                session.add(config)
+        
+        await session.commit()
+        
+        # 更新运行时配置
+        config_manager.update_hyperliquid_config(data.private_key, data.testnet)
+        
+        encrypted_status = "已加密" if encryption_manager.is_available else "未加密（加密器不可用）"
+        return MessageResponse(success=True, message=f"Hyperliquid配置已更新（{encrypted_status}）")
     except HTTPException:
         raise
     except Exception as e:
@@ -292,7 +403,8 @@ async def close_position(symbol: str):
 @router.get("/websocket/status", response_model=WebSocketStatus)
 async def get_websocket_status():
     """获取WebSocket状态"""
-    status = binance_ws.get_status()
+    ws = get_exchange_ws()
+    status = ws.get_status()
     return WebSocketStatus(**status)
 
 
@@ -300,9 +412,11 @@ async def get_websocket_status():
 async def restart_websocket():
     """重启WebSocket连接"""
     try:
-        await binance_ws.stop()
-        await binance_ws.start()
-        return MessageResponse(success=True, message="WebSocket已重启")
+        ws = get_exchange_ws()
+        await ws.stop()
+        await ws.start()
+        exchange_name = get_exchange_display_name()
+        return MessageResponse(success=True, message=f"{exchange_name} WebSocket已重启")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -387,13 +501,24 @@ async def get_stop_loss_stats():
 async def get_account_balance():
     """获取账户余额"""
     try:
-        balances = await binance_api.get_account_balance()
-        usdt = balances.get("USDT", {})
-        return {
-            "usdt_balance": usdt.get("balance", 0),
-            "usdt_available": usdt.get("available", 0),
-            "unrealized_pnl": usdt.get("unrealized_pnl", 0)
-        }
+        api = get_exchange_api()
+        balances = await api.get_account_balance()
+        usdt = balances.get("USDT")
+        
+        if usdt:
+            return {
+                "usdt_balance": usdt.balance,
+                "usdt_available": usdt.available,
+                "unrealized_pnl": usdt.unrealized_pnl,
+                "exchange": settings.EXCHANGE
+            }
+        else:
+            return {
+                "usdt_balance": 0,
+                "usdt_available": 0,
+                "unrealized_pnl": 0,
+                "exchange": settings.EXCHANGE
+            }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

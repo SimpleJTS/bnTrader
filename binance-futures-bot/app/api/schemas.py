@@ -6,6 +6,33 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 
 
+# ========== Exchange Config Schemas ==========
+
+class ExchangeInfo(BaseModel):
+    """交易所信息"""
+    type: str = Field(..., description="交易所类型: binance/hyperliquid")
+    name: str = Field(..., description="交易所显示名称")
+    description: str = Field(default="", description="交易所描述")
+
+
+class ExchangeConfigUpdate(BaseModel):
+    """切换交易所请求"""
+    exchange: str = Field(..., description="目标交易所: binance/hyperliquid")
+
+
+class ExchangeConfigResponse(BaseModel):
+    """交易所配置响应"""
+    current_exchange: str
+    current_exchange_name: str
+    supported_exchanges: List[ExchangeInfo]
+
+
+class HyperliquidConfigUpdate(BaseModel):
+    """Hyperliquid配置"""
+    private_key: str = Field(..., description="钱包私钥 (带0x前缀)")
+    testnet: bool = Field(default=False, description="是否使用测试网")
+
+
 # ========== Trading Pair Schemas ==========
 
 class TradingPairBase(BaseModel):

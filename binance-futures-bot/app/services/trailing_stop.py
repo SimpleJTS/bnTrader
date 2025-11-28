@@ -1,6 +1,7 @@
 """
 移动止损模块
 实现分级止损和追踪止损
+使用工厂模式支持多交易所
 """
 import asyncio
 import json
@@ -12,7 +13,7 @@ from sqlalchemy import select
 
 from app.config import settings, config_manager
 from app.database import DatabaseManager
-from app.services.binance_api import binance_api
+from app.services.exchange_factory import get_exchange_api
 from app.services.position_manager import position_manager
 from app.models import Position, StopLossLog, SystemConfig
 
@@ -279,13 +280,14 @@ class TrailingStopManager:
                 await self._sync_positions_with_exchange()
                 
                 positions = position_manager.get_all_positions()
+                api = get_exchange_api()
                 
                 for position in positions:
                     if position.status != "OPEN":
                         continue
                     
                     try:
-                        current_price = await binance_api.get_current_price(position.symbol)
+                        current_price = await api.get_current_price(position.symbol)
                         await self.check_trailing_stop(position, current_price)
                     except Exception as e:
                         logger.error(f"[{position.symbol}] 检查移动止损失败: {e}")
@@ -300,8 +302,9 @@ class TrailingStopManager:
         """同步交易所实际持仓，清理已平仓的仓位"""
         try:
             # 获取交易所实际持仓
-            exchange_positions = await binance_api.get_position()
-            exchange_symbols = {p["symbol"] for p in exchange_positions}
+            api = get_exchange_api()
+            exchange_positions = await api.get_position()
+            exchange_symbols = {p.symbol for p in exchange_positions}
             
             # 获取本地缓存的仓位
             local_positions = position_manager.get_all_positions()

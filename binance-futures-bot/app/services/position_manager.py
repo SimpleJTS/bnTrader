@@ -1,6 +1,7 @@
 """
 仓位管理模块
 负责开平仓、止损设置等
+使用交易所工厂模式支持多交易所
 """
 import asyncio
 import logging
@@ -12,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import DatabaseManager
 from app.models import Position, TradingPair, TradeLog
-from app.services.binance_api import binance_api
+from app.services.exchange_factory import get_exchange_api
 from app.services.telegram import telegram_service
 from app.config import settings
 from app.utils.helpers import format_price_full
@@ -25,6 +26,11 @@ class PositionManager:
     
     def __init__(self):
         self._positions: Dict[str, Position] = {}  # 内存缓存
+    
+    @property
+    def exchange_api(self):
+        """获取当前交易所API"""
+        return get_exchange_api()
     
     async def load_positions(self):
         """从数据库加载开放仓位"""
@@ -64,6 +70,7 @@ class PositionManager:
         Returns:
             Position对象
         """
+        api = self.exchange_api
         session = await DatabaseManager.get_session()
         try:
             # 检查是否已有仓位
@@ -72,39 +79,30 @@ class PositionManager:
                 return None
             
             # 设置杠杆
-            await binance_api.set_leverage(symbol, leverage)
+            await api.set_leverage(symbol, leverage)
             
             # 设置逐仓模式
-            await binance_api.set_margin_type(symbol, "ISOLATED")
+            await api.set_margin_type(symbol, "ISOLATED")
             
             # 下单方向
             order_side = "BUY" if side == "LONG" else "SELL"
             
             # 下市价单
-            order_result = await binance_api.place_market_order(
+            order_result = await api.place_market_order(
                 symbol=symbol,
                 side=order_side,
                 quantity=quantity
             )
             
-            logger.info(f"[{symbol}] 市价单已提交: 订单ID={order_result.get('orderId')}, 方向={'做多' if side == 'LONG' else '做空'}")
+            logger.info(f"[{symbol}] 市价单已提交: 订单ID={order_result.order_id}, 方向={'做多' if side == 'LONG' else '做空'}")
             
             # 获取实际成交价格
-            # 优先使用avgPrice，如果为0则通过累计成交额/累计成交量计算，最后使用entry_price
-            avg_price_str = order_result.get("avgPrice", "0")
-            actual_price = float(avg_price_str) if avg_price_str else 0
-            
+            actual_price = order_result.avg_price
             if actual_price <= 0:
-                # 尝试通过累计成交额/成交量计算均价
-                cum_quote = float(order_result.get("cumQuote", 0) or order_result.get("cummulativeQuoteQty", 0))
-                executed_qty = float(order_result.get("executedQty", 0))
-                if cum_quote > 0 and executed_qty > 0:
-                    actual_price = cum_quote / executed_qty
-                else:
-                    actual_price = entry_price
-                logger.warning(f"[{symbol}] avgPrice不可用，使用计算价格: {format_price_full(actual_price)}")
+                actual_price = entry_price
+                logger.warning(f"[{symbol}] avgPrice不可用，使用传入价格: {format_price_full(actual_price)}")
             
-            actual_qty = float(order_result.get("executedQty", 0))
+            actual_qty = order_result.executed_qty
             if actual_qty <= 0:
                 actual_qty = quantity
                 logger.warning(f"[{symbol}] executedQty不可用，使用传入数量: {actual_qty}")
@@ -133,14 +131,14 @@ class PositionManager:
             
             # 设置止损单
             stop_side = "SELL" if side == "LONG" else "BUY"
-            stop_order = await binance_api.place_stop_loss_order(
+            stop_order = await api.place_stop_loss_order(
                 symbol=symbol,
                 side=stop_side,
                 quantity=actual_qty,
                 stop_price=stop_loss_price
             )
             
-            stop_order_id = str(stop_order.get("orderId", ""))
+            stop_order_id = stop_order.order_id
             
             # 创建仓位记录
             position = Position(
@@ -170,20 +168,22 @@ class PositionManager:
                 action=f"OPEN_{side}",
                 price=actual_price,
                 quantity=actual_qty,
-                order_id=str(order_result.get("orderId", "")),
+                order_id=order_result.order_id,
                 message=f"开{side}仓: 价格={format_price_full(actual_price)}, 数量={actual_qty}, 杠杆={leverage}x, 止损={format_price_full(stop_loss_price)}",
                 extra_data={
                     "leverage": leverage,
                     "stop_loss_price": stop_loss_price,
-                    "stop_order_id": stop_order_id
+                    "stop_order_id": stop_order_id,
+                    "exchange": settings.EXCHANGE
                 }
             )
             session.add(trade_log)
             await session.commit()
             
             # TG通知
+            exchange_name = settings.EXCHANGE.upper()
             msg = (
-                f"🟢 **开仓通知**\n"
+                f"🟢 **开仓通知** [{exchange_name}]\n"
                 f"交易对: {symbol}\n"
                 f"方向: {'做多 📈' if side == 'LONG' else '做空 📉'}\n"
                 f"价格: {format_price_full(actual_price)}\n"
@@ -210,6 +210,7 @@ class PositionManager:
             symbol: 交易对
             reason: 平仓原因 (SIGNAL/STOP_LOSS/TRAILING_STOP/MANUAL)
         """
+        api = self.exchange_api
         session = await DatabaseManager.get_session()
         try:
             position = self._positions.get(symbol)
@@ -219,19 +220,19 @@ class PositionManager:
             
             # 取消所有挂单
             try:
-                await binance_api.cancel_all_orders(symbol)
+                await api.cancel_all_orders(symbol)
                 logger.info(f"[{symbol}] 已取消所有挂单")
             except Exception as e:
                 logger.warning(f"[{symbol}] 取消挂单失败: {e}")
             
             # 获取当前价格
-            current_price = await binance_api.get_current_price(symbol)
+            current_price = await api.get_current_price(symbol)
             
             # 平仓方向
             close_side = "SELL" if position.side == "LONG" else "BUY"
             
             # 下市价平仓单
-            order_result = await binance_api.place_market_order(
+            order_result = await api.place_market_order(
                 symbol=symbol,
                 side=close_side,
                 quantity=position.quantity,
@@ -269,13 +270,14 @@ class PositionManager:
                 action=f"CLOSE_{reason}",
                 price=current_price,
                 quantity=position.quantity,
-                order_id=str(order_result.get("orderId", "")),
+                order_id=order_result.order_id,
                 message=f"平仓: 价格={format_price_full(current_price)}, 盈亏={format_price_full(pnl)} USDT ({pnl_percent:.2f}%)",
                 extra_data={
                     "entry_price": position.entry_price,
                     "pnl": pnl,
                     "pnl_percent": pnl_percent,
-                    "reason": reason
+                    "reason": reason,
+                    "exchange": settings.EXCHANGE
                 }
             )
             session.add(trade_log)
@@ -283,8 +285,9 @@ class PositionManager:
             
             # TG通知
             emoji = "🟢" if pnl >= 0 else "🔴"
+            exchange_name = settings.EXCHANGE.upper()
             msg = (
-                f"{emoji} **平仓通知**\n"
+                f"{emoji} **平仓通知** [{exchange_name}]\n"
                 f"交易对: {symbol}\n"
                 f"方向: {'做多' if position.side == 'LONG' else '做空'}\n"
                 f"入场价: {format_price_full(position.entry_price)}\n"
@@ -314,6 +317,7 @@ class PositionManager:
             level: 止损级别
             is_trailing: 是否为追踪止损
         """
+        api = self.exchange_api
         session = await DatabaseManager.get_session()
         try:
             position = self._positions.get(symbol)
@@ -321,17 +325,17 @@ class PositionManager:
                 return False
             
             # 获取精度信息并格式化价格（提前格式化，用于比较）
-            precision_info = await binance_api.get_symbol_precision(symbol)
-            formatted_price = binance_api.format_price(new_stop_price, precision_info)
+            precision_info = await api.get_symbol_precision(symbol)
+            formatted_price = api.format_price(new_stop_price, precision_info)
             
             # 验证新止损价格
             if Decimal(formatted_price) <= 0:
                 raise ValueError(f"无效的新止损价格: {new_stop_price} -> {formatted_price}")
             
             # 格式化当前止损价格用于比较
-            current_formatted_price = binance_api.format_price(position.stop_loss_price, precision_info) if position.stop_loss_price else "0"
+            current_formatted_price = api.format_price(position.stop_loss_price, precision_info) if position.stop_loss_price else "0"
             
-            # 优化：如果格式化后的止损价格没有变化，跳过更新，避免不必要的API调用
+            # 优化：如果格式化后的止损价格没有变化，跳过更新
             if formatted_price == current_formatted_price:
                 logger.debug(f"[{symbol}] 止损价格未变化 ({formatted_price})，跳过更新")
                 await session.close()
@@ -340,7 +344,7 @@ class PositionManager:
             # 取消原止损单
             if position.stop_loss_order_id:
                 try:
-                    await binance_api.cancel_order(symbol, position.stop_loss_order_id)
+                    await api.cancel_order(symbol, position.stop_loss_order_id)
                     logger.info(f"[{symbol}] 已取消原止损单: {position.stop_loss_order_id}")
                 except Exception as e:
                     logger.warning(f"[{symbol}] 取消原止损单失败: {e}")
@@ -358,14 +362,14 @@ class PositionManager:
             
             # 设置新止损单
             stop_side = "SELL" if position.side == "LONG" else "BUY"
-            stop_order = await binance_api.place_stop_loss_order(
+            stop_order = await api.place_stop_loss_order(
                 symbol=symbol,
                 side=stop_side,
                 quantity=position.quantity,
                 stop_price=new_stop_price
             )
             
-            new_order_id = str(stop_order.get("orderId", ""))
+            new_order_id = stop_order.order_id
             
             # 更新数据库
             update_values = {
@@ -403,15 +407,17 @@ class PositionManager:
                     "old_stop_price": old_stop,
                     "new_stop_price": new_stop_price,
                     "level": level,
-                    "is_trailing": is_trailing
+                    "is_trailing": is_trailing,
+                    "exchange": settings.EXCHANGE
                 }
             )
             session.add(trade_log)
             await session.commit()
             
             # TG通知
+            exchange_name = settings.EXCHANGE.upper()
             msg = (
-                f"🔔 **止损调整**\n"
+                f"🔔 **止损调整** [{exchange_name}]\n"
                 f"交易对: {symbol}\n"
                 f"原止损: {format_price_full(old_stop)}\n"
                 f"新止损: {format_price_full(new_stop_price)}\n"
@@ -431,9 +437,10 @@ class PositionManager:
     
     async def sync_with_exchange(self):
         """与交易所同步仓位状态"""
+        api = self.exchange_api
         try:
-            exchange_positions = await binance_api.get_position()
-            exchange_symbols = {p["symbol"] for p in exchange_positions}
+            exchange_positions = await api.get_position()
+            exchange_symbols = {p.symbol for p in exchange_positions}
             
             # 检查本地仓位是否还存在于交易所
             for symbol in list(self._positions.keys()):
@@ -446,15 +453,8 @@ class PositionManager:
     
     async def mark_position_closed(self, symbol: str, reason: str = "STOP_LOSS", 
                                      close_price: float = None) -> bool:
-        """标记仓位已平仓（不下单，仅更新本地状态）
-        
-        用于处理交易所已经平仓但本地缓存未同步的情况
-        
-        Args:
-            symbol: 交易对
-            reason: 平仓原因
-            close_price: 平仓价格（可选，不提供则获取当前价格）
-        """
+        """标记仓位已平仓（不下单，仅更新本地状态）"""
+        api = self.exchange_api
         session = await DatabaseManager.get_session()
         try:
             position = self._positions.get(symbol)
@@ -465,9 +465,9 @@ class PositionManager:
             # 获取平仓价格
             if close_price is None:
                 try:
-                    close_price = await binance_api.get_current_price(symbol)
+                    close_price = await api.get_current_price(symbol)
                 except Exception:
-                    close_price = position.stop_loss_price  # 使用止损价作为估算
+                    close_price = position.stop_loss_price
             
             # 计算盈亏
             if position.side == "LONG":
@@ -506,7 +506,8 @@ class PositionManager:
                     "pnl": pnl,
                     "pnl_percent": pnl_percent,
                     "reason": reason,
-                    "sync_type": "exchange_sync"
+                    "sync_type": "exchange_sync",
+                    "exchange": settings.EXCHANGE
                 }
             )
             session.add(trade_log)
@@ -516,8 +517,9 @@ class PositionManager:
             
             # TG通知
             emoji = "🟢" if pnl >= 0 else "🔴"
+            exchange_name = settings.EXCHANGE.upper()
             msg = (
-                f"{emoji} **止损触发通知**\n"
+                f"{emoji} **止损触发通知** [{exchange_name}]\n"
                 f"交易对: {symbol}\n"
                 f"方向: {'做多' if position.side == 'LONG' else '做空'}\n"
                 f"入场价: {format_price_full(position.entry_price)}\n"

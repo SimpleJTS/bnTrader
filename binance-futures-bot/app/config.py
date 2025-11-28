@@ -11,7 +11,7 @@ from pydantic import Field
 class Settings(BaseSettings):
     """应用配置"""
     # 应用设置
-    APP_NAME: str = "Binance Futures Bot"
+    APP_NAME: str = "Futures Trading Bot"
     DEBUG: bool = False
     HOST: str = "0.0.0.0"
     PORT: int = 8000
@@ -19,19 +19,26 @@ class Settings(BaseSettings):
     # 数据库
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/bot.db"
     
-    # 币安API配置（可通过Web界面动态配置）
+    # ========== 交易所选择 ==========
+    EXCHANGE: str = "binance"  # 可选: "binance" 或 "hyperliquid"
+    
+    # ========== 币安API配置 ==========
     BINANCE_API_KEY: str = ""
     BINANCE_API_SECRET: str = ""
     BINANCE_TESTNET: bool = False
     
-    # Telegram配置
+    # ========== Hyperliquid配置 ==========
+    HYPERLIQUID_PRIVATE_KEY: str = ""  # 钱包私钥 (带0x前缀)
+    HYPERLIQUID_TESTNET: bool = False
+    
+    # ========== Telegram配置 ==========
     TG_BOT_TOKEN: str = ""
     TG_CHAT_ID: str = ""
     TG_API_ID: int = 0
     TG_API_HASH: str = ""
     TG_CHANNEL: str = "https://t.me/BWE_OI_Price_monitor"
     
-    # 交易默认参数
+    # ========== 交易默认参数 ==========
     DEFAULT_LEVERAGE: int = 10
     DEFAULT_STRATEGY_INTERVAL: str = "1m"
     DEFAULT_STOP_LOSS_PERCENT: float = 2.0
@@ -97,11 +104,20 @@ class ConfigManager:
             except Exception as e:
                 print(f"Observer notification error: {e}")
     
+    def update_exchange(self, exchange: str):
+        """更新交易所选择"""
+        settings.EXCHANGE = exchange.lower()
+    
     def update_binance_config(self, api_key: str, api_secret: str, testnet: bool = False):
         """更新币安API配置"""
         settings.BINANCE_API_KEY = api_key
         settings.BINANCE_API_SECRET = api_secret
         settings.BINANCE_TESTNET = testnet
+    
+    def update_hyperliquid_config(self, private_key: str, testnet: bool = False):
+        """更新Hyperliquid配置"""
+        settings.HYPERLIQUID_PRIVATE_KEY = private_key
+        settings.HYPERLIQUID_TESTNET = testnet
     
     def update_telegram_config(self, bot_token: str, chat_id: str, 
                                 api_id: int = 0, api_hash: str = ""):

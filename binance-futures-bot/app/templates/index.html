@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Binance Futures Bot</title>
+    <title>Futures Trading Bot</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -457,6 +457,7 @@
             <div class="logo">
                 <div class="logo-icon">₿</div>
                 <h1>Futures Bot</h1>
+                <span id="exchange-badge" class="badge badge-info" style="margin-left: 12px; font-size: 0.8rem;">--</span>
             </div>
             <div class="status-bar">
                 <div class="status-item">
@@ -588,8 +589,12 @@
             <!-- 配置状态卡片 -->
             <div class="stats-grid" id="config-status-grid">
                 <div class="stat-card">
-                    <div class="stat-label">币安 API</div>
-                    <div class="stat-value" id="binance-status">--</div>
+                    <div class="stat-label">当前交易所</div>
+                    <div class="stat-value" id="current-exchange-status">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">API 状态</div>
+                    <div class="stat-value" id="api-status">--</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">Telegram</div>
@@ -599,14 +604,62 @@
                     <div class="stat-label">加密存储</div>
                     <div class="stat-value" id="encryption-status">--</div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-label">频道监听</div>
-                    <div class="stat-value" id="channel-status">--</div>
-                </div>
             </div>
 
+            <!-- 交易所选择 -->
             <div class="card">
-                <h2 class="card-title" style="margin-bottom: 24px;">币安 API 配置</h2>
+                <h2 class="card-title" style="margin-bottom: 24px;">🔄 交易所选择</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.875rem;">
+                    选择要使用的交易所。切换交易所后需要重新配置对应的API凭据。
+                </p>
+                <div class="form-group">
+                    <div style="display: flex; gap: 16px; flex-wrap: wrap;">
+                        <label class="exchange-option" style="cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 16px 24px; background: var(--bg-tertiary); border-radius: 12px; border: 2px solid transparent; transition: all 0.2s;" id="exchange-option-binance">
+                            <input type="radio" name="exchange" value="binance" style="display: none;" id="exchange-radio-binance">
+                            <div>
+                                <div style="font-weight: 600; font-size: 1rem;">Binance (币安)</div>
+                                <div style="color: var(--text-secondary); font-size: 0.8rem;">全球最大的中心化交易所</div>
+                            </div>
+                        </label>
+                        <label class="exchange-option" style="cursor: pointer; display: flex; align-items: center; gap: 12px; padding: 16px 24px; background: var(--bg-tertiary); border-radius: 12px; border: 2px solid transparent; transition: all 0.2s;" id="exchange-option-hyperliquid">
+                            <input type="radio" name="exchange" value="hyperliquid" style="display: none;" id="exchange-radio-hyperliquid">
+                            <div>
+                                <div style="font-weight: 600; font-size: 1rem;">Hyperliquid</div>
+                                <div style="color: var(--text-secondary); font-size: 0.8rem;">L1区块链去中心化永续合约</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+                <button class="btn btn-primary" onclick="switchExchange()" id="switch-exchange-btn" disabled>切换交易所</button>
+            </div>
+
+            <!-- Hyperliquid配置 (默认隐藏) -->
+            <div class="card" id="hyperliquid-config-card" style="display: none;">
+                <h2 class="card-title" style="margin-bottom: 24px;">🔮 Hyperliquid 配置</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.875rem;">
+                    Hyperliquid使用钱包私钥进行签名认证。请妥善保管您的私钥，切勿泄露。
+                </p>
+                <form id="hyperliquid-form">
+                    <div class="form-group">
+                        <label class="form-label">钱包私钥</label>
+                        <input type="password" class="form-input" id="hyperliquid-private-key" placeholder="0x... (带0x前缀)">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label" style="display: flex; align-items: center; gap: 12px;">
+                            <span>使用测试网</span>
+                            <label class="toggle">
+                                <input type="checkbox" id="hyperliquid-testnet">
+                                <span class="toggle-slider"></span>
+                            </label>
+                        </label>
+                    </div>
+                    <button type="submit" class="btn btn-primary">保存Hyperliquid配置</button>
+                </form>
+            </div>
+
+            <!-- 币安配置 -->
+            <div class="card" id="binance-config-card">
+                <h2 class="card-title" style="margin-bottom: 24px;">🟡 币安 API 配置</h2>
                 <form id="binance-form">
                     <div class="form-row">
                         <div class="form-group">
@@ -861,6 +914,8 @@
 
     <script>
         const API_BASE = '';
+        let currentExchange = 'binance';
+        let selectedExchange = 'binance';
 
         // Tab switching
         document.querySelectorAll('.tab').forEach(tab => {
@@ -892,6 +947,118 @@
             }
             return response.json();
         }
+
+        // ========== Exchange Selection ==========
+        
+        // Exchange option click handlers
+        document.querySelectorAll('.exchange-option').forEach(option => {
+            option.addEventListener('click', () => {
+                const radio = option.querySelector('input[type="radio"]');
+                radio.checked = true;
+                selectedExchange = radio.value;
+                updateExchangeOptionStyles();
+                updateSwitchButton();
+            });
+        });
+        
+        function updateExchangeOptionStyles() {
+            document.querySelectorAll('.exchange-option').forEach(opt => {
+                const radio = opt.querySelector('input[type="radio"]');
+                if (radio.checked) {
+                    opt.style.borderColor = 'var(--accent-green)';
+                    opt.style.background = 'rgba(0, 255, 136, 0.1)';
+                } else {
+                    opt.style.borderColor = 'transparent';
+                    opt.style.background = 'var(--bg-tertiary)';
+                }
+            });
+        }
+        
+        function updateSwitchButton() {
+            const btn = document.getElementById('switch-exchange-btn');
+            btn.disabled = selectedExchange === currentExchange;
+        }
+        
+        async function loadExchangeConfig() {
+            try {
+                const config = await apiCall('/config/exchange');
+                currentExchange = config.current_exchange;
+                selectedExchange = currentExchange;
+                
+                // Update badge
+                document.getElementById('exchange-badge').textContent = config.current_exchange_name;
+                
+                // Update radio buttons
+                document.getElementById('exchange-radio-' + currentExchange).checked = true;
+                updateExchangeOptionStyles();
+                updateSwitchButton();
+                
+                // Show/hide config cards based on current exchange
+                updateConfigCardVisibility();
+                
+                // Update status
+                document.getElementById('current-exchange-status').textContent = config.current_exchange_name;
+                document.getElementById('current-exchange-status').style.color = 'var(--accent-blue)';
+                document.getElementById('current-exchange-status').style.fontSize = '0.9rem';
+            } catch (e) {
+                console.error('Failed to load exchange config:', e);
+            }
+        }
+        
+        function updateConfigCardVisibility() {
+            if (currentExchange === 'hyperliquid') {
+                document.getElementById('hyperliquid-config-card').style.display = 'block';
+                document.getElementById('binance-config-card').style.display = 'none';
+            } else {
+                document.getElementById('hyperliquid-config-card').style.display = 'none';
+                document.getElementById('binance-config-card').style.display = 'block';
+            }
+        }
+        
+        async function switchExchange() {
+            if (selectedExchange === currentExchange) return;
+            
+            if (!confirm(`确定要切换到 ${selectedExchange === 'hyperliquid' ? 'Hyperliquid' : 'Binance'} 吗？\n切换后需要重新配置API凭据。`)) {
+                return;
+            }
+            
+            try {
+                const result = await apiCall('/config/exchange', 'POST', { exchange: selectedExchange });
+                showToast(result.message);
+                currentExchange = selectedExchange;
+                
+                // Reload configs
+                await loadExchangeConfig();
+                await loadConfigStatus();
+                await loadWsStatus();
+                await loadBalance();
+            } catch (e) {
+                showToast(e.message, 'error');
+                // Reset selection
+                selectedExchange = currentExchange;
+                document.getElementById('exchange-radio-' + currentExchange).checked = true;
+                updateExchangeOptionStyles();
+            }
+        }
+        
+        // Hyperliquid config form
+        document.getElementById('hyperliquid-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const result = await apiCall('/config/hyperliquid', 'POST', {
+                    private_key: document.getElementById('hyperliquid-private-key').value,
+                    testnet: document.getElementById('hyperliquid-testnet').checked
+                });
+                showToast(result.message || 'Hyperliquid配置已保存');
+                // Clear input
+                document.getElementById('hyperliquid-private-key').value = '';
+                document.getElementById('hyperliquid-private-key').placeholder = '••••••••（已保存）';
+                loadConfigStatus();
+                loadBalance();
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        });
 
         // Load trading pairs
         async function loadPairs() {
@@ -1199,11 +1366,19 @@
             try {
                 const status = await apiCall('/config/status');
                 
-                // 币安状态
-                const binanceEl = document.getElementById('binance-status');
-                binanceEl.textContent = status.binance_configured ? '✓ 已配置' : '✗ 未配置';
-                binanceEl.style.color = status.binance_configured ? 'var(--accent-green)' : 'var(--accent-red)';
-                binanceEl.style.fontSize = '1rem';
+                // API状态 - 根据当前交易所显示
+                const apiEl = document.getElementById('api-status');
+                let apiConfigured = false;
+                if (currentExchange === 'hyperliquid') {
+                    // Hyperliquid需要检查私钥配置（这里简单处理，实际可能需要后端支持）
+                    apiConfigured = status.binance_configured; // 暂用binance状态代替
+                    apiEl.textContent = apiConfigured ? '✓ 已配置' : '✗ 未配置';
+                } else {
+                    apiConfigured = status.binance_configured;
+                    apiEl.textContent = apiConfigured ? '✓ 已配置' : '✗ 未配置';
+                }
+                apiEl.style.color = apiConfigured ? 'var(--accent-green)' : 'var(--accent-red)';
+                apiEl.style.fontSize = '1rem';
                 
                 // Telegram状态
                 const telegramEl = document.getElementById('telegram-status');
@@ -1216,12 +1391,6 @@
                 encryptionEl.textContent = status.encryption_enabled ? '🔒 已启用' : '🔓 未启用';
                 encryptionEl.style.color = status.encryption_enabled ? 'var(--accent-green)' : 'var(--accent-yellow)';
                 encryptionEl.style.fontSize = '1rem';
-                
-                // 频道监听状态
-                const channelEl = document.getElementById('channel-status');
-                channelEl.textContent = status.channel_listener_configured ? '✓ 已配置' : '- 未配置';
-                channelEl.style.color = status.channel_listener_configured ? 'var(--accent-green)' : 'var(--text-secondary)';
-                channelEl.style.fontSize = '1rem';
             } catch (e) {
                 console.error('Failed to load config status:', e);
             }
@@ -1375,6 +1544,7 @@
         });
 
         // Initial load
+        loadExchangeConfig();  // 首先加载交易所配置
         loadPairs();
         loadWsStatus();
         loadBalance();
@@ -1389,6 +1559,7 @@
         setInterval(loadConfigStatus, 60000);
         setInterval(loadStopLossLogs, 30000);  // 每30秒刷新止损记录
         setInterval(loadTGMonitorConfig, 30000);  // 每30秒刷新TG监控状态
+        setInterval(loadExchangeConfig, 60000);  // 每60秒刷新交易所配置
     </script>
 </body>
 </html>

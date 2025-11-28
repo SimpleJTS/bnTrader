@@ -1,5 +1,5 @@
 """
-币安WebSocket管理模块
+Hyperliquid WebSocket管理模块
 负责K线数据订阅、健康检查和自动重连
 实现ExchangeWebSocket抽象接口
 """
@@ -7,8 +7,8 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta
-from typing import Dict, Set, Callable, Optional, List, Any
+from datetime import datetime
+from typing import Dict, Callable, Optional, List, Any
 import websockets
 from websockets.exceptions import ConnectionClosed
 
@@ -17,15 +17,15 @@ from app.services.exchange_interface import ExchangeWebSocket, ExchangeType, Kli
 
 logger = logging.getLogger(__name__)
 
+# Hyperliquid WebSocket URLs
+HYPERLIQUID_WS_MAINNET = "wss://api.hyperliquid.xyz/ws"
+HYPERLIQUID_WS_TESTNET = "wss://api.hyperliquid-testnet.xyz/ws"
 
-class BinanceWebSocket(ExchangeWebSocket):
-    """币安WebSocket管理器"""
-    
-    WS_BASE_URL = "wss://fstream.binance.com"
-    TESTNET_WS_URL = "wss://stream.binancefuture.com"
+
+class HyperliquidWebSocket(ExchangeWebSocket):
+    """Hyperliquid WebSocket管理器"""
     
     def __init__(self):
-        self.base_url = self.TESTNET_WS_URL if settings.BINANCE_TESTNET else self.WS_BASE_URL
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._subscriptions: Dict[str, str] = {}  # {symbol: interval}
         self._callbacks: List[Callable] = []
@@ -39,7 +39,18 @@ class BinanceWebSocket(ExchangeWebSocket):
     
     @property
     def exchange_type(self) -> ExchangeType:
-        return ExchangeType.BINANCE
+        return ExchangeType.HYPERLIQUID
+    
+    @property
+    def ws_url(self) -> str:
+        """获取WebSocket URL"""
+        return HYPERLIQUID_WS_TESTNET if settings.HYPERLIQUID_TESTNET else HYPERLIQUID_WS_MAINNET
+    
+    def _get_coin_name(self, symbol: str) -> str:
+        """将交易对转换为Hyperliquid的币种名称"""
+        if symbol.endswith("USDT"):
+            return symbol[:-4]
+        return symbol
     
     def add_callback(self, callback: Callable[[KlineData], Any]):
         """添加K线数据回调"""
@@ -62,30 +73,42 @@ class BinanceWebSocket(ExchangeWebSocket):
             except Exception as e:
                 logger.error(f"回调处理异常: {e}")
     
-    def _build_stream_name(self, symbol: str, interval: str) -> str:
-        """构建stream名称"""
-        return f"{symbol.lower()}@kline_{interval}"
-    
-    def _parse_kline_data(self, data: dict) -> KlineData:
+    def _parse_candle_data(self, data: dict, symbol: str, interval: str) -> KlineData:
         """解析K线数据"""
-        k = data.get("k", {})
+        candle = data.get("data", {})
+        
         return KlineData(
-            symbol=k.get("s", ""),
-            interval=k.get("i", ""),
-            open_time=k.get("t", 0),
-            close_time=k.get("T", 0),
-            open_price=float(k.get("o", 0)),
-            high_price=float(k.get("h", 0)),
-            low_price=float(k.get("l", 0)),
-            close_price=float(k.get("c", 0)),
-            volume=float(k.get("v", 0)),
-            is_closed=k.get("x", False)
+            symbol=symbol,  # 保持原始格式（BTCUSDT）
+            interval=interval,
+            open_time=candle.get("t", 0),
+            close_time=candle.get("t", 0) + self._interval_to_ms(interval) - 1,
+            open_price=float(candle.get("o", 0)),
+            high_price=float(candle.get("h", 0)),
+            low_price=float(candle.get("l", 0)),
+            close_price=float(candle.get("c", 0)),
+            volume=float(candle.get("v", 0)),
+            is_closed=candle.get("s", "") == "close"  # 根据状态判断是否收盘
         )
+    
+    def _interval_to_ms(self, interval: str) -> int:
+        """将时间周期转换为毫秒"""
+        unit = interval[-1]
+        value = int(interval[:-1])
+        
+        if unit == 'm':
+            return value * 60 * 1000
+        elif unit == 'h':
+            return value * 60 * 60 * 1000
+        elif unit == 'd':
+            return value * 24 * 60 * 60 * 1000
+        elif unit == 'w':
+            return value * 7 * 24 * 60 * 60 * 1000
+        return 60 * 1000
     
     async def subscribe(self, symbol: str, interval: str):
         """订阅交易对的K线"""
         async with self._lock:
-            stream_name = self._build_stream_name(symbol, interval)
+            coin = self._get_coin_name(symbol)
             
             if symbol in self._subscriptions:
                 old_interval = self._subscriptions[symbol]
@@ -93,13 +116,16 @@ class BinanceWebSocket(ExchangeWebSocket):
                     logger.info(f"[{symbol}] 已订阅相同周期 {interval}，跳过重复订阅")
                     return
                 
+                # interval变化，先取消旧订阅
                 logger.info(f"[{symbol}] 周期从 {old_interval} 变更为 {interval}，重新订阅")
-                old_stream_name = self._build_stream_name(symbol, old_interval)
                 if self._ws and self._ws.open:
                     unsubscribe_msg = {
-                        "method": "UNSUBSCRIBE",
-                        "params": [old_stream_name],
-                        "id": int(time.time() * 1000)
+                        "method": "unsubscribe",
+                        "subscription": {
+                            "type": "candle",
+                            "coin": coin,
+                            "interval": old_interval
+                        }
                     }
                     await self._ws.send(json.dumps(unsubscribe_msg))
                     await asyncio.sleep(0.2)
@@ -108,9 +134,12 @@ class BinanceWebSocket(ExchangeWebSocket):
             
             if self._ws and self._ws.open:
                 subscribe_msg = {
-                    "method": "SUBSCRIBE",
-                    "params": [stream_name],
-                    "id": int(time.time() * 1000)
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "candle",
+                        "coin": coin,
+                        "interval": interval
+                    }
                 }
                 await self._ws.send(json.dumps(subscribe_msg))
                 logger.info(f"[{symbol}] 已订阅 {interval} K线")
@@ -122,72 +151,67 @@ class BinanceWebSocket(ExchangeWebSocket):
                 return
             
             interval = self._subscriptions.pop(symbol)
-            stream_name = self._build_stream_name(symbol, interval)
+            coin = self._get_coin_name(symbol)
             
             if self._ws and self._ws.open:
                 unsubscribe_msg = {
-                    "method": "UNSUBSCRIBE",
-                    "params": [stream_name],
-                    "id": int(time.time() * 1000)
+                    "method": "unsubscribe",
+                    "subscription": {
+                        "type": "candle",
+                        "coin": coin,
+                        "interval": interval
+                    }
                 }
                 await self._ws.send(json.dumps(unsubscribe_msg))
                 logger.info(f"[{symbol}] 已取消订阅")
     
-    async def _connect(self, include_streams: bool = False):
+    async def _connect(self) -> bool:
         """建立WebSocket连接"""
-        url = f"{self.base_url}/ws"
-        
         try:
             self._ws = await websockets.connect(
-                url,
+                self.ws_url,
                 ping_interval=20,
                 ping_timeout=10,
                 close_timeout=5
             )
             self._start_time = datetime.utcnow()
-            logger.info(f"WebSocket 已连接: {url}")
+            logger.info(f"Hyperliquid WebSocket 已连接: {self.ws_url}")
             
+            # 连接成功后，逐个订阅已有的交易对
             if self._subscriptions:
                 await self._subscribe_all()
             
             return True
         except Exception as e:
-            logger.error(f"WebSocket 连接失败: {e}")
+            logger.error(f"Hyperliquid WebSocket 连接失败: {e}")
             return False
     
     async def _subscribe_all(self):
-        """订阅所有已保存的交易对（使用批量订阅减少请求次数）"""
+        """订阅所有已保存的交易对"""
         if not self._ws or not self._ws.open:
             return
         
-        subscriptions_list = list(self._subscriptions.items())
-        if not subscriptions_list:
-            return
-        
-        batch_size = 10
-        for i in range(0, len(subscriptions_list), batch_size):
-            batch = subscriptions_list[i:i + batch_size]
-            stream_names = [self._build_stream_name(symbol, interval) for symbol, interval in batch]
-            
+        for symbol, interval in list(self._subscriptions.items()):
+            coin = self._get_coin_name(symbol)
             subscribe_msg = {
-                "method": "SUBSCRIBE",
-                "params": stream_names,
-                "id": int(time.time() * 1000)
+                "method": "subscribe",
+                "subscription": {
+                    "type": "candle",
+                    "coin": coin,
+                    "interval": interval
+                }
             }
             try:
                 await self._ws.send(json.dumps(subscribe_msg))
-                symbols_str = ", ".join([s for s, _ in batch])
-                logger.info(f"已批量订阅 {len(batch)} 个交易对: {symbols_str}")
-                
-                if i + batch_size < len(subscriptions_list):
-                    await asyncio.sleep(1.0)
+                logger.info(f"[{symbol}] 已重新订阅 {interval} K线")
+                await asyncio.sleep(0.2)  # 避免请求过快
             except Exception as e:
-                logger.error(f"批量订阅失败: {e}")
+                logger.error(f"[{symbol}] 订阅失败: {e}")
     
     async def _reconnect(self):
         """重连"""
         self._reconnect_count += 1
-        logger.warning(f"正在重连 WebSocket... (第{self._reconnect_count}次尝试)")
+        logger.warning(f"正在重连 Hyperliquid WebSocket... (第{self._reconnect_count}次尝试)")
         
         if self._ws:
             try:
@@ -210,45 +234,40 @@ class BinanceWebSocket(ExchangeWebSocket):
         while self._running:
             try:
                 if not self._ws or not self._ws.open:
-                    logger.warning("WebSocket 未连接或已关闭，触发重连")
+                    logger.warning("Hyperliquid WebSocket 未连接或已关闭，触发重连")
                     await self._reconnect()
                     continue
                 
                 message = await asyncio.wait_for(self._ws.recv(), timeout=30)
                 data = json.loads(message)
                 
-                # 处理订阅响应消息
-                if "result" in data and "id" in data:
-                    if data["result"] is None:
-                        logger.debug(f"订阅响应成功: id={data['id']}")
-                    else:
-                        logger.warning(f"订阅响应: {data}")
+                # 处理订阅确认
+                if data.get("channel") == "subscriptionResponse":
+                    if data.get("data", {}).get("method") == "subscribe":
+                        logger.debug(f"订阅确认: {data}")
                     continue
                 
-                # 处理错误消息
+                # 处理K线数据
+                if data.get("channel") == "candle":
+                    candle_data = data.get("data", {})
+                    coin = candle_data.get("s", "")  # 币种名称
+                    
+                    # 查找对应的symbol和interval
+                    for symbol, interval in self._subscriptions.items():
+                        if self._get_coin_name(symbol) == coin:
+                            kline = self._parse_candle_data(data, symbol, interval)
+                            self._last_message_time[symbol] = datetime.utcnow()
+                            await self._notify_callbacks(kline)
+                            break
+                
+                # 处理错误
                 if "error" in data:
-                    error_msg = data.get("error", {})
-                    logger.error(f"WebSocket 错误: code={error_msg.get('code')}, msg={error_msg.get('msg')}")
-                    continue
-                
-                # 处理stream消息
-                if "stream" in data and "data" in data:
-                    stream_data = data["data"]
-                    if stream_data.get("e") == "kline":
-                        kline = self._parse_kline_data(stream_data)
-                        self._last_message_time[kline.symbol] = datetime.utcnow()
-                        await self._notify_callbacks(kline)
-                
-                # 处理单独的kline消息
-                elif data.get("e") == "kline":
-                    kline = self._parse_kline_data(data)
-                    self._last_message_time[kline.symbol] = datetime.utcnow()
-                    await self._notify_callbacks(kline)
+                    logger.error(f"Hyperliquid WebSocket 错误: {data['error']}")
                 
             except asyncio.TimeoutError:
                 continue
             except ConnectionClosed as e:
-                logger.warning(f"WebSocket 连接已关闭: code={e.code}, reason={e.reason}")
+                logger.warning(f"Hyperliquid WebSocket 连接已关闭: code={e.code}, reason={e.reason}")
                 await self._reconnect()
             except json.JSONDecodeError as e:
                 logger.error(f"JSON 解析错误: {e}")
@@ -266,21 +285,23 @@ class BinanceWebSocket(ExchangeWebSocket):
                 
                 now = datetime.utcnow()
                 
+                # 检查每个订阅的最后消息时间
                 for symbol in list(self._subscriptions.keys()):
                     last_time = self._last_message_time.get(symbol)
                     if last_time:
                         time_diff = (now - last_time).total_seconds()
                         if time_diff > settings.WS_NO_DATA_TIMEOUT:
-                            msg = f"⚠️ WebSocket {symbol} 超过{settings.WS_NO_DATA_TIMEOUT}秒无数据，正在重连..."
+                            msg = f"⚠️ Hyperliquid WebSocket {symbol} 超过{settings.WS_NO_DATA_TIMEOUT}秒无数据，正在重连..."
                             logger.warning(msg)
                             await telegram_service.send_message(msg)
                             await self._reconnect()
                             break
                 
+                # 检查是否需要全量重启
                 if self._start_time:
                     running_hours = (now - self._start_time).total_seconds() / 3600
                     if running_hours >= settings.WS_FULL_RESTART_HOURS:
-                        msg = f"🔄 WebSocket 运行超过{settings.WS_FULL_RESTART_HOURS}小时，执行全量重启..."
+                        msg = f"🔄 Hyperliquid WebSocket 运行超过{settings.WS_FULL_RESTART_HOURS}小时，执行全量重启..."
                         logger.info(msg)
                         await telegram_service.send_message(msg)
                         await self._full_restart()
@@ -290,7 +311,7 @@ class BinanceWebSocket(ExchangeWebSocket):
     
     async def _full_restart(self):
         """全量重启WebSocket"""
-        logger.info("开始全量重启 WebSocket...")
+        logger.info("开始全量重启 Hyperliquid WebSocket...")
         
         if self._ws:
             try:
@@ -315,7 +336,7 @@ class BinanceWebSocket(ExchangeWebSocket):
         await self._connect()
         self._message_task = asyncio.create_task(self._message_handler())
         self._health_check_task = asyncio.create_task(self._health_check())
-        logger.info("WebSocket 服务已启动")
+        logger.info("Hyperliquid WebSocket 服务已启动")
     
     async def stop(self):
         """停止WebSocket服务"""
@@ -338,7 +359,7 @@ class BinanceWebSocket(ExchangeWebSocket):
         if self._ws:
             await self._ws.close()
         
-        logger.info("WebSocket 服务已停止")
+        logger.info("Hyperliquid WebSocket 服务已停止")
     
     def get_status(self) -> dict:
         """获取WebSocket状态"""
@@ -354,22 +375,26 @@ class BinanceWebSocket(ExchangeWebSocket):
 
 
 # 全局实例
-binance_ws = BinanceWebSocket()
+hyperliquid_ws = HyperliquidWebSocket()
 
 
 # 配置变更监听器
-async def on_config_change(change_type: str, data: dict):
-    """处理配置变更"""
+async def on_hl_config_change(change_type: str, data: dict):
+    """处理配置变更（Hyperliquid专用）"""
+    # 只在当前交易所是Hyperliquid时处理
+    if settings.EXCHANGE != "hyperliquid":
+        return
+    
     if change_type == "trading_pair_added":
         symbol = data.get("symbol")
         interval = data.get("interval", settings.DEFAULT_STRATEGY_INTERVAL)
         if symbol:
-            await binance_ws.subscribe(symbol, interval)
+            await hyperliquid_ws.subscribe(symbol, interval)
     
     elif change_type == "trading_pair_removed":
         symbol = data.get("symbol")
         if symbol:
-            await binance_ws.unsubscribe(symbol)
+            await hyperliquid_ws.unsubscribe(symbol)
     
     elif change_type == "trading_pair_updated":
         symbol = data.get("symbol")
@@ -378,11 +403,11 @@ async def on_config_change(change_type: str, data: dict):
         
         if symbol:
             if is_active:
-                await binance_ws.subscribe(symbol, interval)
+                await hyperliquid_ws.subscribe(symbol, interval)
                 logger.info(f"[{symbol}] 配置已更新，周期: {interval}")
             else:
-                await binance_ws.unsubscribe(symbol)
+                await hyperliquid_ws.unsubscribe(symbol)
                 logger.info(f"[{symbol}] 已停用，取消订阅")
 
 # 注册配置变更监听
-config_manager.add_observer(on_config_change)
+config_manager.add_observer(on_hl_config_change)
