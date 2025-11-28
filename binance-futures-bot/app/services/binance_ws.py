@@ -94,9 +94,25 @@ class BinanceWebSocket:
         """订阅交易对的K线"""
         async with self._lock:
             stream_name = self._build_stream_name(symbol, interval)
+            
+            # 检查是否已订阅，如果interval不同需要先取消旧订阅
             if symbol in self._subscriptions:
-                logger.info(f"[{symbol}] 已订阅，跳过重复订阅")
-                return
+                old_interval = self._subscriptions[symbol]
+                if old_interval == interval:
+                    logger.info(f"[{symbol}] 已订阅相同周期 {interval}，跳过重复订阅")
+                    return
+                
+                # interval变化，先取消旧订阅
+                logger.info(f"[{symbol}] 周期从 {old_interval} 变更为 {interval}，重新订阅")
+                old_stream_name = self._build_stream_name(symbol, old_interval)
+                if self._ws and self._ws.open:
+                    unsubscribe_msg = {
+                        "method": "UNSUBSCRIBE",
+                        "params": [old_stream_name],
+                        "id": int(time.time() * 1000)
+                    }
+                    await self._ws.send(json.dumps(unsubscribe_msg))
+                    await asyncio.sleep(0.2)  # 等待取消订阅完成
             
             self._subscriptions[symbol] = interval
             
@@ -158,24 +174,35 @@ class BinanceWebSocket:
             return False
     
     async def _subscribe_all(self):
-        """订阅所有已保存的交易对"""
+        """订阅所有已保存的交易对（使用批量订阅减少请求次数）"""
         if not self._ws or not self._ws.open:
             return
         
-        for symbol, interval in list(self._subscriptions.items()):
-            stream_name = self._build_stream_name(symbol, interval)
+        subscriptions_list = list(self._subscriptions.items())
+        if not subscriptions_list:
+            return
+        
+        # 批量订阅：每批最多10个，避免单次请求太大
+        batch_size = 10
+        for i in range(0, len(subscriptions_list), batch_size):
+            batch = subscriptions_list[i:i + batch_size]
+            stream_names = [self._build_stream_name(symbol, interval) for symbol, interval in batch]
+            
             subscribe_msg = {
                 "method": "SUBSCRIBE",
-                "params": [stream_name],
+                "params": stream_names,
                 "id": int(time.time() * 1000)
             }
             try:
                 await self._ws.send(json.dumps(subscribe_msg))
-                logger.info(f"[{symbol}] 已发送订阅请求: {interval}")
-                # 添加小延迟，避免发送过快被限流
-                await asyncio.sleep(0.1)
+                symbols_str = ", ".join([s for s, _ in batch])
+                logger.info(f"已批量订阅 {len(batch)} 个交易对: {symbols_str}")
+                
+                # 批次之间等待1秒，避免被限流
+                if i + batch_size < len(subscriptions_list):
+                    await asyncio.sleep(1.0)
             except Exception as e:
-                logger.error(f"[{symbol}] 订阅失败: {e}")
+                logger.error(f"批量订阅失败: {e}")
     
     async def _reconnect(self):
         """重连"""
@@ -191,7 +218,8 @@ class BinanceWebSocket:
             self._ws = None
         
         # 等待后重连（指数退避，最多60秒）
-        wait_time = min(5 * self._reconnect_count, 60)
+        # 如果是因为"Too many requests"错误，需要等待更长时间
+        wait_time = min(10 * self._reconnect_count, 60)
         logger.info(f"等待 {wait_time} 秒后重连...")
         await asyncio.sleep(wait_time)
         
@@ -388,9 +416,12 @@ async def on_config_change(change_type: str, data: dict):
         
         if symbol:
             if is_active:
+                # subscribe方法会自动检测interval变化并重新订阅
                 await binance_ws.subscribe(symbol, interval)
+                logger.info(f"[{symbol}] 配置已更新，周期: {interval}")
             else:
                 await binance_ws.unsubscribe(symbol)
+                logger.info(f"[{symbol}] 已停用，取消订阅")
 
 # 注册配置变更监听
 config_manager.add_observer(on_config_change)
