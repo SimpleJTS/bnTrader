@@ -53,6 +53,13 @@ def setup_logging(level: str = "INFO", log_dir: str = "logs"):
     file_handler.suffix = "%Y%m%d_%H%M%S"  # 备份文件后缀格式
     root_logger.addHandler(file_handler)
     
+    # 禁用HTTP库的常规请求日志，只保留WARNING及以上级别（异常时会输出）
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
+    
     logging.info(f"日志系统初始化完成，日志目录: {log_dir}，分割周期: 4小时")
 
 
