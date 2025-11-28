@@ -128,17 +128,15 @@ class BinanceWebSocket:
                 await self._ws.send(json.dumps(unsubscribe_msg))
                 logger.info(f"[{symbol}] 已取消订阅")
     
-    async def _connect(self):
-        """建立WebSocket连接"""
-        # 构建初始stream列表
-        streams = []
-        for symbol, interval in self._subscriptions.items():
-            streams.append(self._build_stream_name(symbol, interval))
+    async def _connect(self, include_streams: bool = False):
+        """建立WebSocket连接
         
-        if streams:
-            url = f"{self.base_url}/stream?streams={'/'.join(streams)}"
-        else:
-            url = f"{self.base_url}/ws"
+        Args:
+            include_streams: 是否在URL中包含streams（首次连接时不包含，避免无效交易对导致连接失败）
+        """
+        # 始终先建立空连接，然后通过SUBSCRIBE消息订阅
+        # 这样即使某些交易对无效，也不会影响整个连接
+        url = f"{self.base_url}/ws"
         
         try:
             self._ws = await websockets.connect(
@@ -148,12 +146,36 @@ class BinanceWebSocket:
                 close_timeout=5
             )
             self._start_time = datetime.utcnow()
-            self._reconnect_count = 0
             logger.info(f"WebSocket 已连接: {url}")
+            
+            # 连接成功后，逐个订阅已有的交易对
+            if self._subscriptions:
+                await self._subscribe_all()
+            
             return True
         except Exception as e:
             logger.error(f"WebSocket 连接失败: {e}")
             return False
+    
+    async def _subscribe_all(self):
+        """订阅所有已保存的交易对"""
+        if not self._ws or not self._ws.open:
+            return
+        
+        for symbol, interval in list(self._subscriptions.items()):
+            stream_name = self._build_stream_name(symbol, interval)
+            subscribe_msg = {
+                "method": "SUBSCRIBE",
+                "params": [stream_name],
+                "id": int(time.time() * 1000)
+            }
+            try:
+                await self._ws.send(json.dumps(subscribe_msg))
+                logger.info(f"[{symbol}] 已发送订阅请求: {interval}")
+                # 添加小延迟，避免发送过快被限流
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                logger.error(f"[{symbol}] 订阅失败: {e}")
     
     async def _reconnect(self):
         """重连"""
@@ -166,21 +188,16 @@ class BinanceWebSocket:
                 await self._ws.close()
             except:
                 pass
+            self._ws = None
         
-        # 等待后重连
-        await asyncio.sleep(min(5 * self._reconnect_count, 60))
+        # 等待后重连（指数退避，最多60秒）
+        wait_time = min(5 * self._reconnect_count, 60)
+        logger.info(f"等待 {wait_time} 秒后重连...")
+        await asyncio.sleep(wait_time)
         
+        # _connect 会自动调用 _subscribe_all 重新订阅
         if await self._connect():
-            # 重新订阅所有交易对
-            for symbol, interval in list(self._subscriptions.items()):
-                stream_name = self._build_stream_name(symbol, interval)
-                subscribe_msg = {
-                    "method": "SUBSCRIBE",
-                    "params": [stream_name],
-                    "id": int(time.time() * 1000)
-                }
-                await self._ws.send(json.dumps(subscribe_msg))
-            
+            self._reconnect_count = 0  # 重连成功后重置计数
             return True
         return False
     
@@ -189,11 +206,27 @@ class BinanceWebSocket:
         while self._running:
             try:
                 if not self._ws or not self._ws.open:
+                    logger.warning("WebSocket 未连接或已关闭，触发重连")
                     await self._reconnect()
                     continue
                 
                 message = await asyncio.wait_for(self._ws.recv(), timeout=30)
                 data = json.loads(message)
+                
+                # 处理订阅响应消息
+                if "result" in data and "id" in data:
+                    # 订阅成功响应：{"result": null, "id": xxx}
+                    if data["result"] is None:
+                        logger.debug(f"订阅响应成功: id={data['id']}")
+                    else:
+                        logger.warning(f"订阅响应: {data}")
+                    continue
+                
+                # 处理错误消息
+                if "error" in data:
+                    error_msg = data.get("error", {})
+                    logger.error(f"WebSocket 错误: code={error_msg.get('code')}, msg={error_msg.get('msg')}")
+                    continue
                 
                 # 处理stream消息
                 if "stream" in data and "data" in data:
@@ -210,12 +243,15 @@ class BinanceWebSocket:
                     await self._notify_callbacks(kline)
                 
             except asyncio.TimeoutError:
+                # 30秒没收到消息是正常的，继续等待
                 continue
-            except ConnectionClosed:
-                logger.warning("WebSocket 连接已关闭")
+            except ConnectionClosed as e:
+                logger.warning(f"WebSocket 连接已关闭: code={e.code}, reason={e.reason}")
                 await self._reconnect()
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON 解析错误: {e}")
             except Exception as e:
-                logger.error(f"消息处理异常: {e}")
+                logger.error(f"消息处理异常: {type(e).__name__}: {e}")
                 await asyncio.sleep(1)
     
     async def _health_check(self):
@@ -254,8 +290,7 @@ class BinanceWebSocket:
     
     async def _full_restart(self):
         """全量重启WebSocket"""
-        # 保存当前订阅
-        current_subs = dict(self._subscriptions)
+        logger.info("开始全量重启 WebSocket...")
         
         # 关闭连接
         if self._ws:
@@ -263,23 +298,16 @@ class BinanceWebSocket:
                 await self._ws.close()
             except:
                 pass
+            self._ws = None
         
         # 等待一小段时间
         await asyncio.sleep(2)
         
-        # 重新连接
-        await self._connect()
-        
-        # 重新订阅
-        for symbol, interval in current_subs.items():
-            stream_name = self._build_stream_name(symbol, interval)
-            subscribe_msg = {
-                "method": "SUBSCRIBE",
-                "params": [stream_name],
-                "id": int(time.time() * 1000)
-            }
-            if self._ws and self._ws.open:
-                await self._ws.send(json.dumps(subscribe_msg))
+        # 重新连接（_connect 会自动调用 _subscribe_all 重新订阅）
+        if await self._connect():
+            logger.info("全量重启完成")
+        else:
+            logger.error("全量重启失败")
     
     async def start(self):
         """启动WebSocket服务"""
