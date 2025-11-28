@@ -197,3 +197,26 @@ class TrailingStopConfigUpdate(BaseModel):
     level_1: Optional[TrailingStopLevel] = None
     level_2: Optional[TrailingStopLevel] = None
     level_3: Optional[TrailingStopLevel] = None
+
+
+# ========== TG Monitor Config ==========
+
+class TGMonitorConfig(BaseModel):
+    """TG频道监控配置"""
+    min_price_change_percent: float = Field(
+        default=30.0, 
+        ge=1.0, 
+        le=100.0, 
+        description="24H价格变化阈值（绝对值），超过此阈值自动添加交易对"
+    )
+    is_running: bool = Field(default=False, description="监控是否运行中")
+
+
+class TGMonitorConfigUpdate(BaseModel):
+    """更新TG频道监控配置"""
+    min_price_change_percent: float = Field(
+        ..., 
+        ge=1.0, 
+        le=100.0, 
+        description="24H价格变化阈值（绝对值）"
+    )

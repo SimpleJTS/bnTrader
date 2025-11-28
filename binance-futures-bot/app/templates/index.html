@@ -662,6 +662,31 @@
             </div>
 
             <div class="card">
+                <h2 class="card-title" style="margin-bottom: 24px;">📡 TG 频道监控配置</h2>
+                <p style="color: var(--text-secondary); margin-bottom: 20px; font-size: 0.875rem;">
+                    监控Telegram频道，当检测到24H价格变化（绝对值）超过阈值的交易对时，自动添加到交易列表。
+                </p>
+                <form id="tg-monitor-form">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label class="form-label">24H价格变化阈值 (%)</label>
+                            <input type="number" class="form-input" id="tg-min-price-change" 
+                                   step="1" min="1" max="100" value="30" 
+                                   placeholder="价格变化绝对值超过此阈值自动添加">
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">监控状态</label>
+                            <div style="display: flex; align-items: center; gap: 8px; height: 44px;">
+                                <span class="status-dot" id="tg-monitor-status-dot"></span>
+                                <span id="tg-monitor-status-text" style="font-size: 0.875rem;">--</span>
+                            </div>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary">保存监控配置</button>
+                </form>
+            </div>
+
+            <div class="card">
                 <h2 class="card-title" style="margin-bottom: 24px;">WebSocket 控制</h2>
                 <div style="display: flex; gap: 12px; align-items: center;">
                     <button class="btn btn-secondary" onclick="restartWebSocket()">重启 WebSocket</button>
@@ -1300,6 +1325,55 @@
             }
         });
 
+        // ========== TG Monitor Config ==========
+        
+        // Load TG monitor config
+        async function loadTGMonitorConfig() {
+            try {
+                const config = await apiCall('/config/tg-monitor');
+                document.getElementById('tg-min-price-change').value = config.min_price_change_percent;
+                
+                // 更新状态显示
+                const statusDot = document.getElementById('tg-monitor-status-dot');
+                const statusText = document.getElementById('tg-monitor-status-text');
+                
+                if (config.is_running) {
+                    statusDot.classList.add('online');
+                    statusDot.classList.remove('offline');
+                    statusText.textContent = '运行中';
+                    statusText.style.color = 'var(--accent-green)';
+                } else {
+                    statusDot.classList.add('offline');
+                    statusDot.classList.remove('online');
+                    statusText.textContent = '未运行';
+                    statusText.style.color = 'var(--text-secondary)';
+                }
+            } catch (e) {
+                console.error('Failed to load TG monitor config:', e);
+            }
+        }
+        
+        // Save TG monitor config
+        document.getElementById('tg-monitor-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            try {
+                const data = {
+                    min_price_change_percent: parseFloat(document.getElementById('tg-min-price-change').value)
+                };
+                
+                if (data.min_price_change_percent < 1 || data.min_price_change_percent > 100) {
+                    showToast('阈值必须在 1-100% 之间', 'error');
+                    return;
+                }
+                
+                const result = await apiCall('/config/tg-monitor', 'POST', data);
+                showToast(result.message || 'TG监控配置已保存');
+                loadTGMonitorConfig();
+            } catch (e) {
+                showToast(e.message, 'error');
+            }
+        });
+
         // Initial load
         loadPairs();
         loadWsStatus();
@@ -1307,12 +1381,14 @@
         loadConfigStatus();
         loadStopLossLogs();
         loadTrailingStopConfig();
+        loadTGMonitorConfig();
         
         // Refresh periodically
         setInterval(loadWsStatus, 30000);
         setInterval(loadBalance, 60000);
         setInterval(loadConfigStatus, 60000);
         setInterval(loadStopLossLogs, 30000);  // 每30秒刷新止损记录
+        setInterval(loadTGMonitorConfig, 30000);  // 每30秒刷新TG监控状态
     </script>
 </body>
 </html>

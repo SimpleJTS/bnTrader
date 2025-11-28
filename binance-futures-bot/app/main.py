@@ -22,7 +22,8 @@ from app.services.binance_ws import binance_ws, KlineData
 from app.services.strategy import ema_strategy, SignalType
 from app.services.position_manager import position_manager
 from app.services.trailing_stop import trailing_stop_manager
-from app.services.telegram import telegram_service, channel_listener
+from app.services.telegram import telegram_service
+from app.services.tg_monitor import oi_monitor
 from app.utils.helpers import setup_logging
 from app.utils.encryption import decrypt, encryption_manager
 
@@ -244,6 +245,11 @@ async def load_config_from_db():
                 settings.TG_API_ID = int(value) if value else 0
             elif config.key == "TG_API_HASH" and value:
                 settings.TG_API_HASH = value
+            elif config.key == "MIN_PRICE_CHANGE_PERCENT" and value:
+                try:
+                    settings.MIN_PRICE_CHANGE_PERCENT = float(value)
+                except ValueError:
+                    pass
         
         if loaded_count > 0:
             logger.info(f"已从数据库加载 {loaded_count} 项配置（其中 {encrypted_count} 项已解密）")
@@ -312,9 +318,9 @@ async def lifespan(app: FastAPI):
     # 启动移动止损管理器
     await trailing_stop_manager.start()
     
-    # 启动TG频道监听（如果配置了）
+    # 启动TG OI频道监控（如果配置了）
     if settings.TG_API_ID and settings.TG_API_HASH:
-        await channel_listener.start()
+        oi_monitor.start()  # 使用独立线程，不阻塞主程序
     
     # 发送启动通知
     await telegram_service.send_message("🚀 **Binance Futures Bot 已启动**")
@@ -329,7 +335,7 @@ async def lifespan(app: FastAPI):
     await trailing_stop_manager.stop()
     await trading_engine.stop()
     await binance_ws.stop()
-    await channel_listener.stop()
+    oi_monitor.stop()  # 停止OI监控线程
     await binance_api.close()
     
     await telegram_service.send_message("🛑 **Binance Futures Bot 已停止**")

@@ -1,12 +1,8 @@
 """
 Telegram服务模块
-包含消息推送和频道监听功能
+包含消息推送功能
 """
-import re
-import asyncio
 import logging
-from typing import Callable, List
-
 from app.config import settings, config_manager
 
 logger = logging.getLogger(__name__)
@@ -74,175 +70,8 @@ class TelegramService:
         return text
 
 
-class TelegramChannelListener:
-    """Telegram频道监听器
-    
-    监听指定频道获取24H涨幅30%的交易币种
-    """
-    
-    # 匹配规则: XXXUSDT ... 24H Price Change: ±XX%
-    PATTERN = re.compile(r'([A-Z]{3,10}USDT).*?24H Price Change:\s*([+-]?\d+\.?\d*)%?', re.DOTALL)
-    MIN_CHANGE_PERCENT = 30.0  # 最小涨幅
-    
-    def __init__(self):
-        self._client = None
-        self._running = False
-        self._callbacks: List[Callable] = []
-    
-    def add_callback(self, callback: Callable):
-        """添加回调函数，当发现符合条件的币种时调用"""
-        if callback not in self._callbacks:
-            self._callbacks.append(callback)
-    
-    async def _notify_callbacks(self, symbol: str, change_percent: float):
-        """通知回调"""
-        for callback in self._callbacks:
-            try:
-                if asyncio.iscoroutinefunction(callback):
-                    await callback(symbol, change_percent)
-                else:
-                    callback(symbol, change_percent)
-            except Exception as e:
-                logger.error(f"频道监听器回调异常: {e}")
-    
-    async def initialize(self) -> bool:
-        """初始化Telethon客户端"""
-        if not settings.TG_API_ID or not settings.TG_API_HASH:
-            logger.warning("Telegram API 凭据未配置，无法启用频道监听")
-            return False
-        
-        try:
-            from telethon import TelegramClient, events
-            import os
-            
-            session_path = '/app/data/tgsession'
-            session_file = session_path + '.session'
-            
-            if not os.path.exists(session_file):
-                logger.error(f"Telethon session文件不存在: {session_file}")
-                return False
-            
-            self._client = TelegramClient(session_path, settings.TG_API_ID, settings.TG_API_HASH)
-            await self._client.connect()
-            
-            if not await self._client.is_user_authorized():
-                logger.error("Telethon session 未授权或已过期")
-                await self._client.disconnect()
-                return False
-            
-            # 在初始化时就注册事件处理器，而不是在监听循环中注册
-            channel = settings.TG_CHANNEL
-            if channel.startswith('https://t.me/'):
-                channel = channel.replace('https://t.me/', '@')
-            
-            try:
-                entity = await self._client.get_entity(channel)
-                logger.info(f"正在初始化频道监听: {channel} (ID: {entity.id})")
-            except Exception as e:
-                logger.error(f"获取频道实体失败: {e}")
-                await self._client.disconnect()
-                return False
-            
-            # 保存引用供事件处理器使用
-            listener = self
-            
-            # 定义事件处理器
-            @self._client.on(events.NewMessage(chats=entity))
-            async def message_handler(event):
-                try:
-                    text = event.message.text or ""
-                    if not text:  # 跳过没有文本内容的消息
-                        return
-                    
-                    logger.info(f"[TG频道] 收到新消息，长度: {len(text)}")
-                    logger.info(f"[TG频道] 消息预览: {text[:200]}...")
-                    
-                    results = listener.parse_message(text)
-                    
-                    if results:
-                        logger.info(f"[TG频道] 解析到 {len(results)} 个符合条件的交易对: {results}")
-                        for symbol, change_percent in results:
-                            await listener._notify_callbacks(symbol, change_percent)
-                    else:
-                        logger.info(f"[TG频道] 消息中未发现符合条件的交易对")
-                        
-                except Exception as e:
-                    logger.error(f"消息处理异常: {e}", exc_info=True)
-            
-            logger.info("事件处理器已在初始化时注册")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Telethon 初始化失败: {e}")
-            return False
-    
-    def parse_message(self, text: str) -> List[tuple]:
-        """解析消息，提取符合条件的交易对
-        
-        Returns:
-            List of (symbol, change_percent) tuples
-        """
-        results = []
-        matches = self.PATTERN.findall(text)
-        
-        logger.debug(f"[TG频道] 正则匹配结果: {matches}")
-        
-        if not matches:
-            # 尝试找出消息中是否有类似的内容但格式不同
-            if "USDT" in text:
-                logger.debug(f"[TG频道] 消息包含USDT但正则未匹配，可能格式不同")
-            if "Price Change" in text or "price change" in text.lower():
-                logger.debug(f"[TG频道] 消息包含Price Change相关内容但正则未匹配")
-        
-        for match in matches:
-            symbol = match[0]
-            try:
-                change_percent = float(match[1])
-                logger.info(f"[TG频道] 解析到: {symbol} 变化 {change_percent}%")
-                
-                # 关注24H价格变化绝对值超过30%的（涨跌都算）
-                if abs(change_percent) >= self.MIN_CHANGE_PERCENT:
-                    results.append((symbol, change_percent))
-                    direction = "涨幅" if change_percent > 0 else "跌幅"
-                    logger.info(f"[{symbol}] 发现符合条件的交易对，{direction} {abs(change_percent)}%")
-                else:
-                    logger.debug(f"[{symbol}] 变化 {change_percent}% 未达到阈值 {self.MIN_CHANGE_PERCENT}%")
-            except ValueError as e:
-                logger.warning(f"解析变化百分比失败: {match[1]}, 错误: {e}")
-                continue
-        
-        return results
-    
-    async def start(self):
-        """启动监听"""
-        if self._running:
-            return
-        
-        if not await self.initialize():
-            logger.error("频道监听器初始化失败，无法启动监听")
-            return
-        
-        self._running = True
-        logger.info("频道监听器已启动，等待新消息...")
-        # 不需要再创建额外的监听任务，因为事件处理器已经在初始化时注册了
-    
-    async def stop(self):
-        """停止监听"""
-        self._running = False
-        
-        if self._client:
-            try:
-                await self._client.disconnect()
-                logger.info("Telethon 客户端已断开连接")
-            except Exception as e:
-                logger.error(f"断开 Telethon 连接时出错: {e}")
-        
-        logger.info("频道监听器已停止")
-
-
 # 全局实例
 telegram_service = TelegramService()
-channel_listener = TelegramChannelListener()
 
 
 async def on_new_symbol_detected(symbol: str, change_percent: float):
@@ -302,7 +131,3 @@ async def on_new_symbol_detected(symbol: str, change_percent: float):
         await session.rollback()
     finally:
         await session.close()
-
-
-# 注册回调
-channel_listener.add_callback(on_new_symbol_detected)

@@ -14,7 +14,8 @@ from app.api.schemas import (
     BinanceConfigUpdate, TelegramConfigUpdate, SystemConfigResponse,
     PositionResponse, WebSocketStatus, TradeLogResponse, StopLossLogResponse,
     MessageResponse, ErrorResponse,
-    TrailingStopConfig, TrailingStopConfigUpdate, TrailingStopLevel
+    TrailingStopConfig, TrailingStopConfigUpdate, TrailingStopLevel,
+    TGMonitorConfig, TGMonitorConfigUpdate
 )
 from app.config import settings, config_manager
 from app.services.binance_api import binance_api
@@ -503,6 +504,76 @@ async def update_trailing_stop_config(data: TrailingStopConfigUpdate):
         await config_manager.notify_observers("trailing_stop_config_updated", existing_config)
         
         return MessageResponse(success=True, message="移动止损配置已更新")
+    except Exception as e:
+        await session.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        await session.close()
+
+
+# ========== TG Monitor Config ==========
+
+@router.get("/config/tg-monitor", response_model=TGMonitorConfig)
+async def get_tg_monitor_config():
+    """获取TG频道监控配置"""
+    from app.services.tg_monitor import oi_monitor
+    
+    session = await DatabaseManager.get_session()
+    try:
+        # 从数据库获取配置
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == "MIN_PRICE_CHANGE_PERCENT")
+        )
+        config = result.scalar_one_or_none()
+        
+        min_change = settings.MIN_PRICE_CHANGE_PERCENT
+        if config and config.value:
+            try:
+                min_change = float(config.value)
+            except ValueError:
+                pass
+        
+        return TGMonitorConfig(
+            min_price_change_percent=min_change,
+            is_running=oi_monitor.is_running()
+        )
+    finally:
+        await session.close()
+
+
+@router.post("/config/tg-monitor", response_model=MessageResponse)
+async def update_tg_monitor_config(data: TGMonitorConfigUpdate):
+    """更新TG频道监控配置"""
+    session = await DatabaseManager.get_session()
+    try:
+        # 保存到数据库
+        result = await session.execute(
+            select(SystemConfig).where(SystemConfig.key == "MIN_PRICE_CHANGE_PERCENT")
+        )
+        config = result.scalar_one_or_none()
+        
+        if config:
+            config.value = str(data.min_price_change_percent)
+            config.description = "TG频道监控 - 24H价格变化阈值%"
+        else:
+            config = SystemConfig(
+                key="MIN_PRICE_CHANGE_PERCENT",
+                value=str(data.min_price_change_percent),
+                description="TG频道监控 - 24H价格变化阈值%"
+            )
+            session.add(config)
+        
+        await session.commit()
+        
+        # 更新运行时配置
+        settings.MIN_PRICE_CHANGE_PERCENT = data.min_price_change_percent
+        
+        logger.info(f"TG监控价格变化阈值已更新为: {data.min_price_change_percent}%")
+        
+        return MessageResponse(
+            success=True, 
+            message=f"TG监控配置已更新，价格变化阈值: {data.min_price_change_percent}%"
+        )
     except Exception as e:
         await session.rollback()
         raise HTTPException(status_code=500, detail=str(e))

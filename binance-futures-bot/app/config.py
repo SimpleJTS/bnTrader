@@ -41,6 +41,9 @@ class Settings(BaseSettings):
     AMPLITUDE_CHECK_KLINES: int = 200
     MIN_AMPLITUDE_PERCENT: float = 7.0
     
+    # TG频道监听 - 24H价格变化阈值
+    MIN_PRICE_CHANGE_PERCENT: float = 30.0  # 价格变化绝对值超过此阈值自动添加交易对
+    
     # WebSocket自愈
     WS_HEALTH_CHECK_INTERVAL: int = 60  # 秒
     WS_NO_DATA_TIMEOUT: int = 300  # 5分钟
