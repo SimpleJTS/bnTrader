@@ -8,6 +8,17 @@ from logging.handlers import TimedRotatingFileHandler
 from typing import List
 
 
+class HealthCheckFilter(logging.Filter):
+    """过滤健康检查请求的日志"""
+    
+    def filter(self, record: logging.LogRecord) -> bool:
+        # 过滤掉包含 /health 的访问日志
+        message = record.getMessage()
+        if "/health" in message:
+            return False
+        return True
+
+
 def setup_logging(level: str = "INFO", log_dir: str = "logs"):
     """
     配置日志
@@ -59,6 +70,9 @@ def setup_logging(level: str = "INFO", log_dir: str = "logs"):
     logging.getLogger("aiohttp").setLevel(logging.WARNING)
     logging.getLogger("urllib3").setLevel(logging.WARNING)
     logging.getLogger("websockets").setLevel(logging.WARNING)
+    
+    # 过滤 uvicorn 访问日志中的健康检查请求
+    logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())
     
     logging.info(f"日志系统初始化完成，日志目录: {log_dir}，分割周期: 4小时")
 
