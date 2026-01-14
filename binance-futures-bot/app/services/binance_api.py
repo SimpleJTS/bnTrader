@@ -343,7 +343,7 @@ class BinanceAPI:
             "symbol": symbol,
             "side": side,
             "type": "STOP_MARKET",
-            "stopPrice": formatted_price,
+            "triggerPrice": formatted_price,
             "timeInForce": "GTE_GTC"
         }
         
